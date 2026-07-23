@@ -6,7 +6,10 @@ class Config {
   static const String supabaseUrl  = 'https://jidfnenvbtpzvtbruojg.supabase.co';
   static const String supabaseAnon = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImppZGZuZW52YnRwenZ0YnJ1b2pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ3NTU5NTQsImV4cCI6MjEwMDMzMTk1NH0.R2SCsgiuFhsqi2DBUbB6vSjQxMQVLwIKUs_SRnQO5zg';   // anon (public) key
 
-  // --- Who this phone belongs to (employees.id UUID) ---
+  // --- Fallback employee (employees.id UUID) ---
+  // With the name picker, each phone chooses its person on first launch and
+  // that choice is stored on the device. This value is only a fallback used
+  // if somehow nothing was picked yet. One shared APK now serves everyone.
   static const String employeeId = 'b6623746-83a4-4ef8-97df-72ed1ec35c2c';
 
   // --- Shop geofence (locked spec) ---

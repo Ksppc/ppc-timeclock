@@ -1,7 +1,7 @@
 import 'dart:convert';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-import 'config.dart';
+import 'identity.dart';
 
 /// Offline-first punch queue. A geofence crossing is written here immediately
 /// with its TRUE crossing time, then pushed to Supabase. If the phone is
@@ -20,7 +20,7 @@ class PunchQueue {
     bool insideGeofence = true,
   }) async {
     final row = {
-      'employee_id': Config.employeeId,
+      'employee_id': await Identity.effectiveId(),
       'event_time': crossedAt.toUtc().toIso8601String(),
       'direction': direction,
       'latitude': lat,
