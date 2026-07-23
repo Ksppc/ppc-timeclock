@@ -1,0 +1,111 @@
+name: Build Paragon Time Clock APK
+
+# Run it from the Actions tab (the "Run workflow" button) or on every push.
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Stash our app source
+        run: |
+          mkdir -p /tmp/appsrc
+          cp -r lib pubspec.yaml /tmp/appsrc/
+
+      - name: Scaffold the Android project
+        run: |
+          flutter create --platforms=android --org ca.paragonprotectivecoatings --project-name ppc_timeclock .
+
+      - name: Restore our app source over the scaffold
+        run: |
+          rm -rf lib pubspec.yaml
+          cp -r /tmp/appsrc/lib .
+          cp /tmp/appsrc/pubspec.yaml .
+
+      - name: Add Android permissions to the manifest
+        run: |
+          python3 - <<'PY'
+          import re, io
+          p = "android/app/src/main/AndroidManifest.xml"
+          s = open(p, encoding="utf-8").read()
+          perms = [
+            "ACCESS_FINE_LOCATION","ACCESS_COARSE_LOCATION","ACCESS_BACKGROUND_LOCATION",
+            "ACTIVITY_RECOGNITION","FOREGROUND_SERVICE","FOREGROUND_SERVICE_LOCATION",
+            "RECEIVE_BOOT_COMPLETED","WAKE_LOCK","INTERNET",
+          ]
+          block = "".join(f'    <uses-permission android:name="android.permission.{x}" />\n' for x in perms)
+          if "ACCESS_BACKGROUND_LOCATION" not in s:
+            s = re.sub(r"(<manifest[^>]*>\s*)", r"\1\n" + block, s, count=1)
+          open(p, "w", encoding="utf-8").write(s)
+          print("manifest patched")
+          PY
+
+      - name: Configure Gradle for background geolocation
+        run: |
+          python3 - <<'PY'
+          import os
+          repos = [
+            'maven { url "${project(\':flutter_background_geolocation\').projectDir}/libs" }',
+            "maven { url 'https://developer.huawei.com/repo/' }",
+            'maven { url "${project(\':background_fetch\').projectDir}/libs" }',
+          ]
+          # New-style: settings.gradle(.kts) dependencyResolutionManagement.repositories
+          for f in ["android/settings.gradle", "android/settings.gradle.kts"]:
+            if os.path.exists(f):
+              s = open(f, encoding="utf-8").read()
+              if "flutter_background_geolocation" not in s and "dependencyResolutionManagement" in s and "repositories {" in s:
+                idx = s.index("dependencyResolutionManagement")
+                ridx = s.index("repositories {", idx) + len("repositories {")
+                s = s[:ridx] + "\n        " + "\n        ".join(repos) + s[ridx:]
+                open(f, "w", encoding="utf-8").write(s)
+                print("patched", f)
+          # Old-style: android/build.gradle allprojects.repositories
+          for f in ["android/build.gradle", "android/build.gradle.kts"]:
+            if os.path.exists(f):
+              s = open(f, encoding="utf-8").read()
+              if "flutter_background_geolocation" not in s and "allprojects" in s and "repositories {" in s:
+                idx = s.index("allprojects")
+                ridx = s.index("repositories {", idx) + len("repositories {")
+                s = s[:ridx] + "\n        " + "\n        ".join(repos) + s[ridx:]
+                open(f, "w", encoding="utf-8").write(s)
+                print("patched", f)
+          # minSdk 21 for the plugin
+          for f in ["android/app/build.gradle", "android/app/build.gradle.kts"]:
+            if os.path.exists(f):
+              s = open(f, encoding="utf-8").read()
+              s = s.replace("minSdkVersion flutter.minSdkVersion", "minSdkVersion 21")
+              s = s.replace("minSdk = flutter.minSdkVersion", "minSdk = 21")
+              s = s.replace("minSdk flutter.minSdkVersion", "minSdk 21")
+              open(f, "w", encoding="utf-8").write(s)
+              print("minSdk set in", f)
+          PY
+
+      - name: Get packages
+        run: flutter pub get
+
+      - name: Build APK (debug — installable, no keystore needed)
+        run: flutter build apk --debug
+
+      - name: Upload the APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: ppc-timeclock-apk
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
