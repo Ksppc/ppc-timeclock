@@ -1,0 +1,21 @@
+name: ppc_timeclock
+description: Paragon GPS Time Clock — silent geofence punch (Android beta).
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.3.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # Robust background geofencing (enter/exit even when app is killed).
+  flutter_background_geolocation: ^4.16.0
+  # Supabase client for inserting punches.
+  supabase_flutter: ^2.5.0
+  # Local offline queue.
+  shared_preferences: ^2.2.0
+  connectivity_plus: ^6.0.0
+
+flutter:
+  uses-material-design: true
