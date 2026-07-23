@@ -4,10 +4,10 @@
 class Config {
   // --- Supabase (from your project's Settings > API) ---
   static const String supabaseUrl  = 'https://jidfnenvbtpzvtbruojg.supabase.co';
-  static const String supabaseAnon = 'YOUR-ANON-KEY';   // paste before the real build
+  static const String supabaseAnon = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImppZGZuZW52YnRwenZ0YnJ1b2pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ3NTU5NTQsImV4cCI6MjEwMDMzMTk1NH0.R2SCsgiuFhsqi2DBUbB6vSjQxMQVLwIKUs_SRnQO5zg';   // anon (public) key
 
   // --- Who this phone belongs to (employees.id UUID) ---
-  static const String employeeId = 'REPLACE-WITH-EMPLOYEE-UUID';
+  static const String employeeId = 'b6623746-83a4-4ef8-97df-72ed1ec35c2c';
 
   // --- Shop geofence (locked spec) ---
   static const double zoneLat = 53.513522;
