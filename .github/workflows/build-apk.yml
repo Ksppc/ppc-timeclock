@@ -97,8 +97,50 @@ jobs:
               s = s.replace("minSdkVersion flutter.minSdkVersion", "minSdkVersion 21")
               s = s.replace("minSdk = flutter.minSdkVersion", "minSdk = 21")
               s = s.replace("minSdk flutter.minSdkVersion", "minSdk 21")
+              s = s.replace("compileSdk = flutter.compileSdkVersion", "compileSdk = 36")
+              s = s.replace("compileSdkVersion flutter.compileSdkVersion", "compileSdkVersion 36")
+              s = s.replace("compileSdk flutter.compileSdkVersion", "compileSdk 36")
               open(f, "w", encoding="utf-8").write(s)
-              print("minSdk set in", f)
+              print("sdk versions set in", f)
+          # Force EVERY Android subproject (incl. plugins like flutter_background_geolocation)
+          # to compileSdk 36 — background_fetch requires its dependents to compile against 36.
+          kts_block = (
+            "\n\nsubprojects {\n"
+            "    afterEvaluate {\n"
+            "        val ext = extensions.findByName(\"android\")\n"
+            "        if (ext != null) {\n"
+            "            try {\n"
+            "                ext.javaClass.getMethod(\"compileSdkVersion\", Int::class.javaPrimitiveType).invoke(ext, 36)\n"
+            "            } catch (e: Exception) {\n"
+            "                try {\n"
+            "                    ext.javaClass.getMethod(\"setCompileSdk\", Integer::class.java).invoke(ext, 36)\n"
+            "                } catch (e2: Exception) {}\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+          )
+          gr_block = (
+            "\n\nsubprojects {\n"
+            "    afterEvaluate { proj ->\n"
+            "        if (proj.hasProperty(\"android\")) {\n"
+            "            proj.android {\n"
+            "                compileSdkVersion 36\n"
+            "            }\n"
+            "        }\n"
+            "    }\n"
+            "}\n"
+          )
+          if os.path.exists("android/build.gradle.kts"):
+            s = open("android/build.gradle.kts", encoding="utf-8").read()
+            if "getMethod(\"compileSdkVersion\"" not in s:
+              open("android/build.gradle.kts", "a", encoding="utf-8").write(kts_block)
+              print("appended subprojects compileSdk override to android/build.gradle.kts")
+          elif os.path.exists("android/build.gradle"):
+            s = open("android/build.gradle", encoding="utf-8").read()
+            if "proj.android" not in s:
+              open("android/build.gradle", "a", encoding="utf-8").write(gr_block)
+              print("appended subprojects compileSdk override to android/build.gradle")
           PY
 
       - name: Get packages
