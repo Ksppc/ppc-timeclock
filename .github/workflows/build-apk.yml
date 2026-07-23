@@ -104,10 +104,12 @@ jobs:
               print("sdk versions set in", f)
           # Force EVERY Android subproject (incl. plugins like flutter_background_geolocation)
           # to compileSdk 36 — background_fetch requires its dependents to compile against 36.
+          # NB: apply directly when the subproject is already evaluated (Flutter's root
+          # script forces early evaluation via evaluationDependsOn), else afterEvaluate.
           kts_block = (
             "\n\nsubprojects {\n"
-            "    afterEvaluate {\n"
-            "        val ext = extensions.findByName(\"android\")\n"
+            "    val setSdk = fun(p: org.gradle.api.Project) {\n"
+            "        val ext = p.extensions.findByName(\"android\")\n"
             "        if (ext != null) {\n"
             "            try {\n"
             "                ext.javaClass.getMethod(\"compileSdkVersion\", Int::class.javaPrimitiveType).invoke(ext, 36)\n"
@@ -118,27 +120,29 @@ jobs:
             "            }\n"
             "        }\n"
             "    }\n"
+            "    if (state.executed) setSdk(project) else afterEvaluate { setSdk(project) }\n"
             "}\n"
           )
           gr_block = (
             "\n\nsubprojects {\n"
-            "    afterEvaluate { proj ->\n"
-            "        if (proj.hasProperty(\"android\")) {\n"
-            "            proj.android {\n"
+            "    def setSdk = { p ->\n"
+            "        if (p.hasProperty(\"android\")) {\n"
+            "            p.android {\n"
             "                compileSdkVersion 36\n"
             "            }\n"
             "        }\n"
             "    }\n"
+            "    if (state.executed) { setSdk(project) } else { afterEvaluate { setSdk(it) } }\n"
             "}\n"
           )
           if os.path.exists("android/build.gradle.kts"):
             s = open("android/build.gradle.kts", encoding="utf-8").read()
-            if "getMethod(\"compileSdkVersion\"" not in s:
+            if "setSdk" not in s:
               open("android/build.gradle.kts", "a", encoding="utf-8").write(kts_block)
               print("appended subprojects compileSdk override to android/build.gradle.kts")
           elif os.path.exists("android/build.gradle"):
             s = open("android/build.gradle", encoding="utf-8").read()
-            if "proj.android" not in s:
+            if "setSdk" not in s:
               open("android/build.gradle", "a", encoding="utf-8").write(gr_block)
               print("appended subprojects compileSdk override to android/build.gradle")
           PY
