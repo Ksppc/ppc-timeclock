@@ -61,31 +61,31 @@ jobs:
         run: |
           python3 - <<'PY'
           import os
-          repos = [
-            'maven { url "${project(\':flutter_background_geolocation\').projectDir}/libs" }',
-            "maven { url 'https://developer.huawei.com/repo/' }",
-            'maven { url "${project(\':background_fetch\').projectDir}/libs" }',
-          ]
-          # New-style: settings.gradle(.kts) dependencyResolutionManagement.repositories
+          def repos(kts):
+            if kts:
+              return [
+                'maven { url = uri("${project(":flutter_background_geolocation").projectDir}/libs") }',
+                'maven { url = uri("https://developer.huawei.com/repo/") }',
+                'maven { url = uri("${project(":background_fetch").projectDir}/libs") }',
+              ]
+            return [
+              'maven { url "${project(\':flutter_background_geolocation\').projectDir}/libs" }',
+              "maven { url 'https://developer.huawei.com/repo/' }",
+              'maven { url "${project(\':background_fetch\').projectDir}/libs" }',
+            ]
+          def inject(f, anchor):
+            s = open(f, encoding="utf-8").read()
+            if "flutter_background_geolocation" in s: return
+            if anchor not in s or "repositories {" not in s: return
+            idx = s.index(anchor)
+            ridx = s.index("repositories {", idx) + len("repositories {")
+            s = s[:ridx] + "\n        " + "\n        ".join(repos(f.endswith(".kts"))) + s[ridx:]
+            open(f, "w", encoding="utf-8").write(s)
+            print("patched", f)
           for f in ["android/settings.gradle", "android/settings.gradle.kts"]:
-            if os.path.exists(f):
-              s = open(f, encoding="utf-8").read()
-              if "flutter_background_geolocation" not in s and "dependencyResolutionManagement" in s and "repositories {" in s:
-                idx = s.index("dependencyResolutionManagement")
-                ridx = s.index("repositories {", idx) + len("repositories {")
-                s = s[:ridx] + "\n        " + "\n        ".join(repos) + s[ridx:]
-                open(f, "w", encoding="utf-8").write(s)
-                print("patched", f)
-          # Old-style: android/build.gradle allprojects.repositories
+            if os.path.exists(f): inject(f, "dependencyResolutionManagement")
           for f in ["android/build.gradle", "android/build.gradle.kts"]:
-            if os.path.exists(f):
-              s = open(f, encoding="utf-8").read()
-              if "flutter_background_geolocation" not in s and "allprojects" in s and "repositories {" in s:
-                idx = s.index("allprojects")
-                ridx = s.index("repositories {", idx) + len("repositories {")
-                s = s[:ridx] + "\n        " + "\n        ".join(repos) + s[ridx:]
-                open(f, "w", encoding="utf-8").write(s)
-                print("patched", f)
+            if os.path.exists(f): inject(f, "allprojects")
           # minSdk 21 for the plugin
           for f in ["android/app/build.gradle", "android/app/build.gradle.kts"]:
             if os.path.exists(f):
