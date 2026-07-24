@@ -213,7 +213,7 @@
     </div>
   </div>
 
-  <div class="section-title"><h2>Crew</h2><div class="r"><span class="note" style="margin:0;align-self:center">Add or remove workers here — no SQL needed.</span></div></div>
+  <div class="section-title"><h2>Crew</h2><div class="r"><label class="chk" style="padding:0;font-weight:600"><input type="checkbox" id="showRemoved"> Show removed</label><span class="note" style="margin:0;align-self:center">Add or remove workers here — no SQL needed.</span></div></div>
   <div class="card" style="margin-bottom:22px;">
     <div class="addrow">
       <div><label class="mini">Name</label><input class="f" id="newName" placeholder="Full name"></div>
@@ -325,7 +325,10 @@
   }
 
   // ---- Crew management ----
-  function renderCrew(emps){
+  let ALL_EMPS=[];
+  function renderCrew(){
+    const showRemoved=$('showRemoved') && $('showRemoved').checked;
+    const emps=ALL_EMPS.filter(e=>showRemoved||e.active);
     $('crew').innerHTML = emps.length ? emps.map((e,i)=>`
       <tr style="${e.active?'':'opacity:.5'}">
         <td><div class="nm-cell">${av(e.full_name,i)}<span class="name">${e.full_name}</span></div></td>
@@ -376,7 +379,7 @@
       const emps=await rest('employees?select=id,full_name,role,is_mobile_crew,active,employee_number&order=full_name');
       const empById={}; emps.forEach(e=>empById[e.id]=e);
       $('kCrew').textContent=emps.filter(e=>e.active).length;
-      renderCrew(emps);
+      ALL_EMPS=emps; renderCrew();
 
       const wds=await rest(`workdays?work_date=gte.${S.start}&work_date=lte.${S.end}&select=*`);
       const today=new Date().toISOString().slice(0,10);
@@ -435,6 +438,7 @@
   $('signout').onclick=logout;
   $('refresh').onclick=load;
   $('addCrew').onclick=addCrew;
+  $('showRemoved').onchange=renderCrew;
   $('cfgStart').onchange=load; $('cfgEnd').onchange=load;
   $('recompute').onclick=async()=>{
     try{ const today=new Date().toISOString().slice(0,10); await rpc('recompute_all',{p_date:today}); toast('Recomputed '+today); load(); }
