@@ -213,6 +213,15 @@
     </div>
   </div>
 
+  <div class="section-title hide" id="reviewTitle"><h2>Needs review</h2><div class="r"><span class="note" style="margin:0;align-self:center">Days the system couldn't auto-close — set the hours to fix.</span></div></div>
+  <div class="card hide" id="reviewCard" style="margin-bottom:22px;border-color:rgba(200,32,47,.4);box-shadow:0 6px 20px rgba(200,32,47,.12)">
+    <div class="card-h" style="background:var(--red-soft)"><h2 style="color:var(--red)">Flagged days</h2><span class="count" id="reviewCount">0</span></div>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>Employee</th><th>Date</th><th>What we know</th><th>Set paid hours</th><th>Note (optional)</th><th></th></tr></thead>
+      <tbody id="reviewBody"></tbody>
+    </table></div>
+  </div>
+
   <div class="section-title"><h2>Crew</h2><div class="r"><label class="chk" style="padding:0;font-weight:600"><input type="checkbox" id="showRemoved"> Show removed</label><span class="note" style="margin:0;align-self:center">Add or remove workers here — no SQL needed.</span></div></div>
   <div class="card" style="margin-bottom:22px;">
     <div class="addrow">
@@ -365,6 +374,52 @@
   function copyId(id){ (navigator.clipboard?.writeText(id)||Promise.reject()).then(()=>toast('Employee ID copied'),()=>toast(id)); }
   window.toggleMobile=toggleMobile; window.setActive=setActive; window.copyId=copyId;
 
+  // ---- Needs-review resolve ----
+  function adminEmail(){
+    try{
+      const s=JSON.parse(localStorage.getItem(SESS_KEY)||'null');
+      const p=JSON.parse(atob(s.access_token.split('.')[1].replace(/-/g,'+').replace(/_/g,'/')));
+      return p.email||'admin';
+    }catch(_){ return 'admin'; }
+  }
+  function renderReview(list, empById){
+    const has=list.length>0;
+    $('reviewTitle').classList.toggle('hide',!has);
+    $('reviewCard').classList.toggle('hide',!has);
+    if(!has) return;
+    $('reviewCount').textContent=list.length;
+    $('reviewBody').innerHTML=list.map(w=>{
+      const e=empById[w.employee_id]||{full_name:'Unknown'};
+      const known = w.first_in
+        ? ('clocked in '+hm(w.first_in)+(w.last_out?(' · out '+hm(w.last_out)):' · <b style="color:var(--red)">no clock-out</b>'))
+        : '<b style="color:var(--red)">no punches recorded</b>';
+      return `<tr>
+        <td><div class="nm-cell">${av(e.full_name,0)}<span class="name">${e.full_name}</span></div></td>
+        <td style="white-space:nowrap">${w.work_date}</td>
+        <td style="color:var(--ink-2)">${known}</td>
+        <td><input class="f" id="rh_${w.id}" placeholder="e.g. 8.5" inputmode="decimal" style="width:84px"></td>
+        <td><input class="f" id="rn_${w.id}" placeholder="reason" style="width:170px"></td>
+        <td><button class="btn primary" onclick="resolveDay('${w.id}')">Save &amp; close</button></td>
+      </tr>`;
+    }).join('');
+  }
+  async function resolveDay(id){
+    const raw=($('rh_'+id).value||'').trim();
+    const H=parseFloat(raw);
+    if(!(H>=0)){ toast('Enter the paid hours (e.g. 8.5)'); return; }
+    const note=$('rn_'+id).value.trim()||null;
+    const reg=Math.min(H,8), ot=+Math.max(0,H-8).toFixed(2);
+    const nowIso=new Date().toISOString();
+    try{
+      await writeRest('PATCH',`workdays?id=eq.${id}`,{
+        paid_hours:+H.toFixed(2), reg_hours:+reg.toFixed(2), ot_hours:ot, status:'closed',
+        admin_note:note, adjusted_by:adminEmail(), adjusted_at:nowIso, computed_at:nowIso
+      });
+      toast('Day resolved & closed'); load();
+    }catch(e){ toast('Resolve failed: '+e.message); }
+  }
+  window.resolveDay=resolveDay;
+
   // ---- default dates: current 14-day period ----
   function defaultDates(){
     const now=new Date(); const end=now.toISOString().slice(0,10);
@@ -401,15 +456,16 @@
         return `<tr><td><div class="nm-cell">${av(e.full_name,i)}<span class="name">${e.full_name}</span></div></td><td class="num">${hm(p.event_time)}</td><td>${dir}</td><td class="num">${p.gps_accuracy_m??'—'} m</td><td>${p.source}</td></tr>`;
       }).join('') : '<tr><td colspan="5" class="empty">No punches today yet.</td></tr>';
 
-      const byEmp={}; let review=0;
+      const byEmp={}; let review=0; const flagged=[];
       wds.forEach(w=>{
-        if(w.status==='needs_review'){review++; return;}
+        if(w.status==='needs_review'){review++; flagged.push(w); return;}
         const e=empById[w.employee_id]; if(!e) return;
         const k=w.employee_id;
         byEmp[k]=byEmp[k]||{name:e.full_name,num:e.employee_number,role:e.role,days:0,reg:0,ot:0};
         byEmp[k].days++; byEmp[k].reg+=+w.reg_hours; byEmp[k].ot+=+w.ot_hours;
       });
       $('kReview').textContent=review;
+      renderReview(flagged, empById);
       SUMMARY=Object.values(byEmp).sort((a,b)=>a.name.localeCompare(b.name));
       let tD=0,tR=0,tO=0;
       $('summary').innerHTML = SUMMARY.length? SUMMARY.map((s,i)=>{
