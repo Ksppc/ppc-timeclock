@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Paragon Time Clock — Admin</title>
+<style>
+  :root{
+    --plane:#eef2f7;--surface:#ffffff;--surface-2:#f6f9fc;--ink:#0f1a26;--ink-2:#46586b;--muted:#8794a3;
+    --grid:#e7ecf3;--border:rgba(15,26,38,.10);
+    --navy:#0c2c4d;--blue:#134c86;--pblue:#17457f;--accent:#1f6fc0;--accent-soft:#e4eefb;
+    --red:#c8202f;--red2:#e23b47;--red-soft:#fde7e9;
+    --good:#0a8f43;--good-soft:#e0f3e8;--warn:#b57e00;--warn-soft:#fdeecb;--ser:#c8202f;--ser-soft:#fde7e9;
+    --shadow:0 1px 2px rgba(15,26,38,.04),0 5px 16px rgba(15,26,38,.06);}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:var(--plane);color:var(--ink);font-family:system-ui,-apple-system,"Segoe UI",sans-serif;font-size:14px;}
+  .wrap{max-width:1140px;margin:0 auto;padding:22px 24px 60px;}
+  .brandbar{background:#fff;border-bottom:3px solid var(--red);box-shadow:0 2px 12px rgba(15,26,38,.07);}
+  .brandinner{max-width:1140px;margin:0 auto;display:flex;align-items:center;gap:16px;padding:12px 24px;flex-wrap:wrap;}
+  .lockup{display:flex;align-items:center;gap:11px;}
+  .shield{width:46px;height:53px;flex-shrink:0;}
+  .wm1{font-size:26px;font-weight:800;color:var(--pblue);letter-spacing:-.5px;line-height:.96;}
+  .wm2{font-size:12px;font-weight:700;color:var(--pblue);letter-spacing:.16em;line-height:1;margin-top:2px;}
+  .wm3{font-size:8.5px;font-weight:700;color:var(--red);letter-spacing:.02em;margin-top:4px;}
+  h1{font-size:16px;font-weight:650;}
+  .sub{font-size:12px;color:var(--muted);}
+  .spacer{flex:1;}
+  .pill{background:var(--accent-soft);border:1px solid #cfe0f2;border-radius:9px;padding:7px 12px;font-size:13px;display:flex;gap:8px;align-items:center;color:var(--blue);font-weight:600;}
+  input,button{font:inherit;}
+  input.f{border:1px solid var(--border);border-radius:8px;padding:8px 11px;font-size:13px;background:var(--surface);color:var(--ink);}
+  input.f:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft);}
+  .btn{border:1px solid var(--border);background:var(--surface);border-radius:9px;padding:8px 14px;font-weight:600;font-size:13px;cursor:pointer;color:var(--ink);transition:.15s;}
+  .btn:hover{border-color:var(--accent);color:var(--accent);}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;}
+  .btn.primary:hover{background:var(--blue);color:#fff;}
+  .btn.red{background:var(--red);border-color:var(--red);color:#fff;}
+  .btn.red:hover{background:var(--red2);color:#fff;}
+  .gate{max-width:430px;margin:9vh auto;background:var(--surface);border:1px solid var(--border);border-top:4px solid var(--red);border-radius:14px;padding:26px;box-shadow:var(--shadow);}
+  .gatehead{display:flex;align-items:center;gap:10px;margin-bottom:16px;padding-bottom:14px;border-bottom:1px solid var(--border);}
+  .gatehead .wm1{font-size:20px;} .gatehead .wm2{font-size:9.5px;}
+  .gate h2{font-size:17px;margin-bottom:6px;color:var(--navy);}
+  .gate p{color:var(--ink-2);font-size:13px;margin-bottom:16px;line-height:1.5;}
+  .gate label{display:block;font-size:12px;font-weight:600;margin:12px 0 4px;color:var(--ink-2);}
+  .gate input{width:100%;}
+  .err{color:var(--ser);font-size:12.5px;margin-top:10px;min-height:16px;}
+  .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px;}
+  .tile{background:var(--surface);border:1px solid var(--border);border-radius:14px;padding:16px 17px 15px;box-shadow:var(--shadow);position:relative;overflow:hidden;}
+  .tile::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--accent);}
+  .tile.red::before{background:var(--red);}
+  .tile .label{font-size:12px;color:var(--muted);display:flex;align-items:center;gap:6px;font-weight:600;}
+  .tile .val{font-size:32px;font-weight:750;margin-top:7px;line-height:1;color:var(--navy);letter-spacing:-1px;}
+  .tile.red .val{color:var(--red);}
+  .tile .val small{font-size:14px;font-weight:500;color:var(--muted);letter-spacing:0;}
+  .tile .foot{font-size:12px;color:var(--ink-2);margin-top:8px;}
+  .dot{width:8px;height:8px;border-radius:50%;display:inline-block;}
+  .cols{display:grid;grid-template-columns:340px 1fr;gap:18px;align-items:start;}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:14px;overflow:hidden;box-shadow:var(--shadow);}
+  .card-h{display:flex;align-items:center;gap:8px;padding:13px 17px;border-bottom:1px solid var(--border);background:var(--surface-2);}
+  .card-h h2{font-size:12px;font-weight:750;letter-spacing:.06em;text-transform:uppercase;color:var(--navy);}
+  .card-h .count{margin-left:auto;font-size:12px;color:var(--muted);}
+  .onsite{padding:6px 8px;}
+  .person{display:flex;align-items:center;gap:11px;padding:9px 8px;border-radius:9px;}
+  .av{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:650;color:#fff;flex-shrink:0;}
+  .person .nm{font-weight:600;font-size:13px;}
+  .person .jb{font-size:12px;color:var(--muted);}
+  .person .time{margin-left:auto;text-align:right;}
+  .person .dur{font-weight:650;font-size:13px;}
+  .person .in{font-size:11px;color:var(--muted);}
+  table{width:100%;border-collapse:collapse;font-size:13px;}
+  th{text-align:left;font-weight:600;font-size:11px;letter-spacing:.03em;text-transform:uppercase;color:var(--muted);padding:10px 16px;border-bottom:1px solid var(--border);}
+  td{padding:11px 16px;border-bottom:1px solid var(--grid);}
+  tr:last-child td{border-bottom:none;}
+  .num{font-variant-numeric:tabular-nums;text-align:right;}
+  .nm-cell{display:flex;align-items:center;gap:10px;}
+  .nm-cell .av{width:28px;height:28px;font-size:11px;}
+  .name{font-weight:600;}
+  .chip{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;font-weight:600;padding:3px 9px;border-radius:20px;white-space:nowrap;}
+  .chip.ok{background:var(--good-soft);color:var(--good);}
+  .chip.warn{background:var(--warn-soft);color:var(--warn);}
+  .chip.ser{background:var(--ser-soft);color:var(--ser);}
+  .section-title{display:flex;align-items:center;margin:28px 0 13px;}
+  .section-title h2{font-size:15px;font-weight:720;color:var(--navy);padding-left:11px;border-left:4px solid var(--red);}
+  .section-title .r{margin-left:auto;display:flex;gap:9px;align-items:center;}
+  tfoot td{font-weight:680;border-top:2px solid var(--border);background:var(--surface-2);}
+  .note{font-size:12px;color:var(--muted);margin-top:12px;line-height:1.6;}
+  .empty{padding:26px;text-align:center;color:var(--muted);font-size:13px;}
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);background:var(--ink);color:var(--plane);font-size:13px;font-weight:600;padding:11px 18px;border-radius:10px;opacity:0;pointer-events:none;transition:.28s;z-index:50;}
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+  .hide{display:none;}
+  .addrow{display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;padding:14px 16px;border-bottom:1px solid var(--border);}
+  .addrow .f{width:210px;}
+  .mini{display:block;font-size:11px;color:var(--muted);margin-bottom:4px;font-weight:600;}
+  .chk{display:flex;align-items:center;gap:7px;font-size:13px;color:var(--ink-2);padding-bottom:8px;cursor:pointer;}
+  .chk input{width:16px;height:16px;accent-color:var(--accent);}
+  .idcell{font-family:ui-monospace,Consolas,monospace;font-size:12px;color:var(--accent);cursor:pointer;border-bottom:1px dashed var(--accent);}
+  .linkbtn{font-size:12.5px;font-weight:600;color:var(--ser);background:none;border:1px solid var(--border);border-radius:7px;padding:4px 10px;cursor:pointer;}
+  .linkbtn:hover{border-color:var(--ser);background:var(--ser-soft);}
+  .linkbtn.restore{color:var(--good);}
+  .linkbtn.restore:hover{border-color:var(--good);background:var(--good-soft);}
+  .mchip{cursor:pointer;}
+  .dates{display:flex;gap:6px;align-items:center;font-size:12px;color:var(--muted);}
+  .dates input{padding:6px 8px;}
+</style>
+</head>
+<body>
+
+<!-- LOGIN GATE -->
+<div id="gate" class="gate">
+  <div class="gatehead">
+    <svg class="shield" viewBox="0 0 46 53" xmlns="http://www.w3.org/2000/svg" aria-label="PPC" style="width:38px;height:44px">
+      <defs>
+        <pattern id="hatch2" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+          <line x1="0" y1="0" x2="0" y2="6" stroke="#17457f" stroke-width="1" opacity=".22"/>
+        </pattern>
+        <path id="sh2" d="M23 1.5 L43 8 V26 C43 39 34 47.5 23 51.5 C12 47.5 3 39 3 26 V8 Z"/>
+        <clipPath id="clp2"><use href="#sh2"/></clipPath>
+      </defs>
+      <use href="#sh2" fill="#ffffff"/>
+      <g clip-path="url(#clp2)"><rect width="46" height="53" fill="url(#hatch2)"/></g>
+      <use href="#sh2" fill="none" stroke="#17457f" stroke-width="3"/>
+      <circle cx="23" cy="40.5" r="2.4" fill="#c8202f"/>
+      <text x="23" y="28" text-anchor="middle" font-family="Arial,system-ui" font-weight="800" font-style="italic" font-size="15" fill="#17457f" letter-spacing="-1">PPC</text>
+    </svg>
+    <div><div class="wm1" style="color:var(--pblue)">PARAGON</div><div class="wm2" style="color:var(--pblue)">PROTECTIVE COATINGS</div></div>
+  </div>
+  <h2>Admin sign in</h2>
+  <p>Sign in with your Paragon Time Clock admin account.</p>
+  <form id="loginForm" autocomplete="on">
+    <label>Email</label>
+    <input class="f" id="email" type="email" autocomplete="username" placeholder="you@paragonprotectivecoatings.ca">
+    <label>Password</label>
+    <input class="f" id="password" type="password" autocomplete="current-password" placeholder="••••••••">
+    <div class="err" id="gateErr"></div>
+    <button class="btn primary" id="signin" type="submit" style="margin-top:16px;width:100%;">Sign in</button>
+  </form>
+</div>
+
+<!-- DASHBOARD -->
+<div class="hide" id="app">
+  <div class="brandbar"><div class="brandinner">
+    <div class="lockup">
+      <svg class="shield" viewBox="0 0 46 53" xmlns="http://www.w3.org/2000/svg" aria-label="PPC">
+        <defs>
+          <pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <line x1="0" y1="0" x2="0" y2="6" stroke="#17457f" stroke-width="1" opacity=".22"/>
+          </pattern>
+          <path id="sh" d="M23 1.5 L43 8 V26 C43 39 34 47.5 23 51.5 C12 47.5 3 39 3 26 V8 Z"/>
+          <clipPath id="clp"><use href="#sh"/></clipPath>
+        </defs>
+        <use href="#sh" fill="#ffffff"/>
+        <g clip-path="url(#clp)"><rect width="46" height="53" fill="url(#hatch)"/></g>
+        <use href="#sh" fill="none" stroke="#17457f" stroke-width="3"/>
+        <circle cx="23" cy="40.5" r="2.4" fill="#c8202f"/>
+        <text x="23" y="28" text-anchor="middle" font-family="Arial,system-ui" font-weight="800" font-style="italic" font-size="15" fill="#17457f" letter-spacing="-1">PPC</text>
+      </svg>
+      <div>
+        <div class="wm1">PARAGON</div>
+        <div class="wm2">PROTECTIVE COATINGS</div>
+        <div class="wm3">BLASTING · COATING · METALIZING · INSPECTIONS</div>
+      </div>
+    </div>
+    <div class="spacer"></div>
+    <div class="dates">
+      <input class="f" id="cfgStart" type="date"><span>→</span><input class="f" id="cfgEnd" type="date">
+    </div>
+    <button class="btn" id="recompute">Recompute today</button>
+    <button class="btn" id="refresh">Refresh</button>
+    <button class="btn red" id="signout">Sign out</button>
+  </div></div>
+  <div class="wrap">
+
+  <div class="kpis">
+    <div class="tile"><div class="label"><span class="dot" style="background:var(--good)"></span> On site now</div><div class="val" id="kOnsite">0</div><div class="foot">Inside the shop geofence</div></div>
+    <div class="tile"><div class="label">Active crew</div><div class="val" id="kCrew">0</div><div class="foot">Enrolled devices</div></div>
+    <div class="tile"><div class="label">Hours this period</div><div class="val" id="kHours">0<small> hrs</small></div><div class="foot" id="kHoursFoot">Regular · OT</div></div>
+    <div class="tile red"><div class="label"><span class="dot" style="background:var(--red)"></span> Needs review</div><div class="val" id="kReview">0</div><div class="foot">Missed / flagged days</div></div>
+  </div>
+
+  <div class="cols">
+    <div class="card">
+      <div class="card-h"><h2>On site now</h2><span class="count" id="onsiteCount">—</span></div>
+      <div class="onsite" id="onsite"></div>
+    </div>
+    <div class="card">
+      <div class="card-h"><h2 id="todayTitle">Today's punches</h2><span class="count">GPS-verified</span></div>
+      <div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Time</th><th>Dir</th><th>Accuracy</th><th>Source</th></tr></thead><tbody id="punches"></tbody></table></div>
+    </div>
+  </div>
+
+  <div class="section-title"><h2>Crew</h2><div class="r"><span class="note" style="margin:0;align-self:center">Add or remove workers here — no SQL needed.</span></div></div>
+  <div class="card" style="margin-bottom:22px;">
+    <div class="addrow">
+      <div><label class="mini">Name</label><input class="f" id="newName" placeholder="Full name"></div>
+      <div><label class="mini">Role</label><input class="f" id="newRole" placeholder="Painter, Blaster, Labourer…"></div>
+      <label class="chk"><input type="checkbox" id="newMobile"> Mobile crew (errand runner)</label>
+      <button class="btn primary" id="addCrew">+ Add member</button>
+    </div>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>Name</th><th>Role</th><th>Mobile</th><th>Status</th><th>Employee ID (for the app)</th><th></th></tr></thead>
+      <tbody id="crew"></tbody>
+    </table></div>
+  </div>
+
+  <div class="section-title"><h2>Pay-period hours</h2><div class="r"><button class="btn primary" id="export">Export hours (.csv)</button></div></div>
+  <div class="card">
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>Employee</th><th>Role</th><th class="num">Days</th><th class="num">Regular</th><th class="num">Overtime</th><th class="num">Total</th></tr></thead>
+      <tbody id="summary"></tbody>
+      <tfoot><tr><td colspan="2" id="tName">All crew</td><td class="num" id="tDays"></td><td class="num" id="tReg"></td><td class="num" id="tOt"></td><td class="num" id="tTot"></td></tr></tfoot>
+    </table></div>
+  </div>
+  <p class="note">Live from Supabase. Overtime shown is per-day (&gt;8h); weekly &gt;40h reconciliation is applied at pay-period roll-up. "On site now" = last punch today was a clock-in.</p>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  // ---- Public config (safe to ship: the anon key is a public client key; the
+  //      database only lets logged-in admins read data via row-level security) ----
+  const SUPABASE_URL = 'https://jidfnenvbtpzvtbruojg.supabase.co';
+  const ANON = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImppZGZuZW52YnRwenZ0YnJ1b2pnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ3NTU5NTQsImV4cCI6MjEwMDMzMTk1NH0.R2SCsgiuFhsqi2DBUbB6vSjQxMQVLwIKUs_SRnQO5zg';
+  const SESS_KEY = 'ppc_admin_session';
+
+  const HUES=['#2a78d6','#008300','#e87ba4','#eda100','#1baf7a','#eb6834','#4a3aa7','#e34948','#256abf','#199e70','#d95926','#9085e9'];
+  const S={start:'',end:''};
+  const $=id=>document.getElementById(id);
+  function initials(n){return (n||'?').split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase();}
+  function av(name,i,cls=''){return `<div class="av ${cls}" style="background:${HUES[i%HUES.length]}">${initials(name)}</div>`;}
+  function hm(iso){const d=new Date(iso);return d.toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});}
+  let tt; function toast(m){const e=$('toast');e.textContent=m;e.classList.add('show');clearTimeout(tt);tt=setTimeout(()=>e.classList.remove('show'),2400);}
+
+  // ---- Auth (Supabase GoTrue via fetch; no library needed) ----
+  function saveSession(j){
+    const sess={access_token:j.access_token,refresh_token:j.refresh_token,
+      expires_at:j.expires_at||(Math.floor(Date.now()/1000)+(j.expires_in||3600))};
+    localStorage.setItem(SESS_KEY,JSON.stringify(sess));
+    return sess;
+  }
+  function clearSession(){ localStorage.removeItem(SESS_KEY); }
+  async function getToken(){
+    let s; try{ s=JSON.parse(localStorage.getItem(SESS_KEY)||'null'); }catch(_){ s=null; }
+    if(!s||!s.access_token) return null;
+    const now=Math.floor(Date.now()/1000);
+    if(s.expires_at && s.expires_at-60>now) return s.access_token;   // still valid
+    // expired → refresh
+    try{
+      const r=await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=refresh_token`,
+        {method:'POST',headers:{apikey:ANON,'Content-Type':'application/json'},
+         body:JSON.stringify({refresh_token:s.refresh_token})});
+      if(!r.ok) throw 0;
+      return saveSession(await r.json()).access_token;
+    }catch(_){ clearSession(); return null; }
+  }
+  async function login(email,password){
+    const r=await fetch(`${SUPABASE_URL}/auth/v1/token?grant_type=password`,
+      {method:'POST',headers:{apikey:ANON,'Content-Type':'application/json'},
+       body:JSON.stringify({email,password})});
+    if(!r.ok){
+      let msg='Sign in failed.';
+      try{ const e=await r.json(); msg=e.error_description||e.msg||e.message||msg; }catch(_){}
+      throw new Error(msg);
+    }
+    saveSession(await r.json());
+  }
+  async function logout(){
+    const t=await getToken();
+    if(t){ try{ await fetch(`${SUPABASE_URL}/auth/v1/logout`,{method:'POST',headers:{apikey:ANON,Authorization:`Bearer ${t}`}}); }catch(_){}}
+    clearSession(); showGate();
+  }
+
+  function showGate(){ $('app').classList.add('hide'); $('gate').classList.remove('hide'); }
+  function showApp(){ $('gate').classList.add('hide'); $('app').classList.remove('hide'); }
+
+  // ---- Data access (authenticated: anon key + the signed-in user's token) ----
+  async function authHeaders(extra){
+    const t=await getToken();
+    if(!t){ showGate(); throw new Error('Your session expired — please sign in again.'); }
+    return Object.assign({apikey:ANON,Authorization:`Bearer ${t}`},extra||{});
+  }
+  async function rest(path){
+    const r=await fetch(`${SUPABASE_URL}/rest/v1/${path}`,{headers:await authHeaders()});
+    if(!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    return r.json();
+  }
+  async function rpc(fn,body){
+    const r=await fetch(`${SUPABASE_URL}/rest/v1/rpc/${fn}`,{method:'POST',
+      headers:await authHeaders({'Content-Type':'application/json'}),body:JSON.stringify(body)});
+    if(!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    return r.json();
+  }
+  async function writeRest(method,path,body){
+    const r=await fetch(`${SUPABASE_URL}/rest/v1/${path}`,{method,
+      headers:await authHeaders({'Content-Type':'application/json',Prefer:'return=representation'}),
+      body:body?JSON.stringify(body):undefined});
+    if(!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    return r.status===204?null:r.json();
+  }
+
+  // ---- Crew management ----
+  function renderCrew(emps){
+    $('crew').innerHTML = emps.length ? emps.map((e,i)=>`
+      <tr style="${e.active?'':'opacity:.5'}">
+        <td><div class="nm-cell">${av(e.full_name,i)}<span class="name">${e.full_name}</span></div></td>
+        <td style="color:var(--ink-2)">${e.role||''}</td>
+        <td><span class="chip mchip ${e.is_mobile_crew?'ok':''}" onclick="toggleMobile('${e.id}',${!e.is_mobile_crew})">${e.is_mobile_crew?'✓ mobile':'— set'}</span></td>
+        <td>${e.active?'<span class="chip ok">active</span>':'<span class="chip ser">removed</span>'}</td>
+        <td><span class="idcell" title="click to copy full ID" onclick="copyId('${e.id}')">${e.id.slice(0,8)}… copy</span></td>
+        <td>${e.active
+          ?`<button class="linkbtn" onclick="setActive('${e.id}',false)">Remove</button>`
+          :`<button class="linkbtn restore" onclick="setActive('${e.id}',true)">Restore</button>`}</td>
+      </tr>`).join('') : '<tr><td colspan="6" class="empty">No crew yet — add your first worker above.</td></tr>';
+  }
+  async function addCrew(){
+    const full_name=$('newName').value.trim();
+    if(!full_name){toast('Enter a name first');return;}
+    const role=$('newRole').value.trim()||null;
+    const is_mobile_crew=$('newMobile').checked;
+    try{
+      await writeRest('POST','employees',{full_name,role,is_mobile_crew});
+      $('newName').value=''; $('newRole').value=''; $('newMobile').checked=false;
+      toast('Added '+full_name); load();
+    }catch(e){ toast('Add failed: '+e.message); }
+  }
+  async function setActive(id,active){
+    try{ await writeRest('PATCH',`employees?id=eq.${id}`,{active}); toast(active?'Restored':'Removed from active crew'); load(); }
+    catch(e){ toast('Failed: '+e.message); }
+  }
+  async function toggleMobile(id,val){
+    try{ await writeRest('PATCH',`employees?id=eq.${id}`,{is_mobile_crew:val}); load(); }
+    catch(e){ toast('Failed: '+e.message); }
+  }
+  function copyId(id){ (navigator.clipboard?.writeText(id)||Promise.reject()).then(()=>toast('Employee ID copied'),()=>toast(id)); }
+  window.toggleMobile=toggleMobile; window.setActive=setActive; window.copyId=copyId;
+
+  // ---- default dates: current 14-day period ----
+  function defaultDates(){
+    const now=new Date(); const end=now.toISOString().slice(0,10);
+    const s=new Date(now.getTime()-13*864e5).toISOString().slice(0,10);
+    $('cfgStart').value=s; $('cfgEnd').value=end; S.start=s; S.end=end;
+  }
+
+  let SUMMARY=[];
+  async function load(){
+    S.start=$('cfgStart').value; S.end=$('cfgEnd').value;
+    try{
+      const emps=await rest('employees?select=id,full_name,role,is_mobile_crew,active&order=full_name');
+      const empById={}; emps.forEach(e=>empById[e.id]=e);
+      $('kCrew').textContent=emps.filter(e=>e.active).length;
+      renderCrew(emps);
+
+      const wds=await rest(`workdays?work_date=gte.${S.start}&work_date=lte.${S.end}&select=*`);
+      const today=new Date().toISOString().slice(0,10);
+      const punches=await rest(`punch_events?event_time=gte.${today}T00:00:00&select=employee_id,event_time,direction,gps_accuracy_m,source&order=event_time.desc`);
+
+      const lastByEmp={};
+      punches.forEach(p=>{ if(!lastByEmp[p.employee_id]) lastByEmp[p.employee_id]=p; });
+      const onsite=Object.values(lastByEmp).filter(p=>p.direction==='in');
+      $('kOnsite').textContent=onsite.length; $('onsiteCount').textContent='Live · '+onsite.length;
+      $('onsite').innerHTML = onsite.length? onsite.map((p,i)=>{
+        const e=empById[p.employee_id]||{full_name:'Unknown'};
+        return `<div class="person">${av(e.full_name,i)}<div><div class="nm">${e.full_name}</div><div class="jb">${e.role||''}</div></div><div class="time"><div class="dur">on site</div><div class="in">since ${hm(p.event_time)}</div></div></div>`;
+      }).join('') : '<div class="empty">Nobody clocked in right now.</div>';
+
+      $('todayTitle').textContent="Today's punches — "+today;
+      $('punches').innerHTML = punches.length? punches.map((p,i)=>{
+        const e=empById[p.employee_id]||{full_name:'Unknown'};
+        const dir = p.direction==='in'?'<span class="chip ok">● in</span>':'<span class="chip ser">▲ out</span>';
+        return `<tr><td><div class="nm-cell">${av(e.full_name,i)}<span class="name">${e.full_name}</span></div></td><td class="num">${hm(p.event_time)}</td><td>${dir}</td><td class="num">${p.gps_accuracy_m??'—'} m</td><td>${p.source}</td></tr>`;
+      }).join('') : '<tr><td colspan="5" class="empty">No punches today yet.</td></tr>';
+
+      const byEmp={}; let review=0;
+      wds.forEach(w=>{
+        if(w.status==='needs_review'){review++; return;}
+        const e=empById[w.employee_id]; if(!e) return;
+        const k=w.employee_id;
+        byEmp[k]=byEmp[k]||{name:e.full_name,role:e.role,days:0,reg:0,ot:0};
+        byEmp[k].days++; byEmp[k].reg+=+w.reg_hours; byEmp[k].ot+=+w.ot_hours;
+      });
+      $('kReview').textContent=review;
+      SUMMARY=Object.values(byEmp).sort((a,b)=>a.name.localeCompare(b.name));
+      let tD=0,tR=0,tO=0;
+      $('summary').innerHTML = SUMMARY.length? SUMMARY.map((s,i)=>{
+        const tot=s.reg+s.ot; tD+=s.days; tR+=s.reg; tO+=s.ot;
+        return `<tr><td><div class="nm-cell">${av(s.name,i)}<span class="name">${s.name}</span></div></td><td style="color:var(--ink-2)">${s.role||''}</td><td class="num">${s.days}</td><td class="num">${s.reg.toFixed(2)}</td><td class="num">${s.ot>0?s.ot.toFixed(2):'—'}</td><td class="num"><b>${tot.toFixed(2)}</b></td></tr>`;
+      }).join('') : '<tr><td colspan="6" class="empty">No closed workdays in this period yet.</td></tr>';
+      $('tDays').textContent=tD; $('tReg').textContent=tR.toFixed(2); $('tOt').textContent=tO.toFixed(2); $('tTot').textContent=(tR+tO).toFixed(2);
+      $('kHours').innerHTML=(tR+tO).toFixed(1)+'<small> hrs</small>';
+      $('kHoursFoot').textContent=`Regular ${tR.toFixed(1)} · OT ${tO.toFixed(1)}`;
+    }catch(e){ toast('Load error: '+e.message); }
+  }
+
+  // ---- wiring ----
+  $('loginForm').addEventListener('submit', async(ev)=>{
+    ev.preventDefault();
+    const email=$('email').value.trim(), password=$('password').value;
+    if(!email||!password){ $('gateErr').textContent='Email and password are required.'; return; }
+    $('gateErr').textContent='Signing in…';
+    try{
+      await login(email,password);
+      $('gateErr').textContent='';
+      $('password').value='';
+      showApp(); defaultDates(); load();
+    }catch(e){ $('gateErr').textContent=e.message; }
+  });
+  $('signout').onclick=logout;
+  $('refresh').onclick=load;
+  $('addCrew').onclick=addCrew;
+  $('cfgStart').onchange=load; $('cfgEnd').onchange=load;
+  $('recompute').onclick=async()=>{
+    try{ const today=new Date().toISOString().slice(0,10); await rpc('recompute_all',{p_date:today}); toast('Recomputed '+today); load(); }
+    catch(e){toast('Recompute failed: '+e.message);}
+  };
+  $('export').onclick=()=>{
+    let rows=[['Employee','Role','Days','Regular','Overtime','Total']];
+    SUMMARY.forEach(s=>rows.push([s.name,s.role||'',s.days,s.reg.toFixed(2),s.ot.toFixed(2),(s.reg+s.ot).toFixed(2)]));
+    const csv=rows.map(r=>r.map(c=>`"${c}"`).join(',')).join('\n');
+    const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
+    a.download=`PPC_hours_${S.start}_to_${S.end}.csv`; a.click(); toast('Hours exported');
+  };
+
+  // ---- boot: resume a saved session, else show the login ----
+  (async()=>{
+    const t=await getToken();
+    if(t){ showApp(); defaultDates(); load(); }
+    else { showGate(); }
+  })();
+</script>
+</body>
+</html>
