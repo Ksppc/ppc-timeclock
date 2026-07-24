@@ -59,4 +59,19 @@ class PunchQueue {
     final prefs = await SharedPreferences.getInstance();
     return (prefs.getStringList(_key) ?? []).length;
   }
+
+  // --- Clock state -----------------------------------------------------------
+  // Tracks whether this phone is currently counted as "at the shop", so a
+  // startup presence-check doesn't double-punch on every app restart.
+  static const _clockedKey = 'clocked_in';
+
+  static Future<bool> isClockedIn() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_clockedKey) ?? false;
+  }
+
+  static Future<void> setClockedIn(bool v) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_clockedKey, v);
+  }
 }
