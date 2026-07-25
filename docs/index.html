@@ -378,8 +378,14 @@
       ALL_EMPS=emps; renderCrew();
 
       const wds=await rest(`workdays?work_date=gte.${S.start}&work_date=lte.${S.end}&select=*`);
-      const today=new Date().toISOString().slice(0,10);
-      const punches=await rest(`punch_events?event_time=gte.${today}T00:00:00&select=employee_id,event_time,direction,gps_accuracy_m,source&order=event_time.desc`);
+      // "Today" in the shop's timezone (America/Edmonton), not UTC — otherwise
+      // morning punches vanish once UTC rolls to the next day.
+      const _now=new Date();
+      const edFmt=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Edmonton'});
+      const today=edFmt.format(_now);
+      const _since=new Date(_now.getTime()-48*3600*1000).toISOString();
+      const punches=(await rest(`punch_events?event_time=gte.${_since}&select=employee_id,event_time,direction,gps_accuracy_m,source&order=event_time.desc`))
+        .filter(p=>edFmt.format(new Date(p.event_time))===today);
 
       const lastByEmp={};
       punches.forEach(p=>{ if(!lastByEmp[p.employee_id]) lastByEmp[p.employee_id]=p; });
@@ -438,7 +444,7 @@
   $('showRemoved').onchange=renderCrew;
   $('cfgStart').onchange=load; $('cfgEnd').onchange=load;
   $('recompute').onclick=async()=>{
-    try{ const today=new Date().toISOString().slice(0,10); await rpc('recompute_all',{p_date:today}); toast('Recomputed '+today); load(); }
+    try{ const today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Edmonton'}).format(new Date()); await rpc('recompute_all',{p_date:today}); toast('Recomputed '+today); load(); }
     catch(e){toast('Recompute failed: '+e.message);}
   };
   $('export').onclick=()=>{
