@@ -52,6 +52,11 @@ class Geofence {
   static Future<void> _record(bg.GeofenceEvent ev) async {
     if (ev.identifier != Config.geofenceId) return;
     final entering = ev.action == 'ENTER';
+    final alreadyOnSite = await PunchQueue.isClockedIn();
+    // Ignore duplicate same-direction crossings: GPS drift at the boundary can
+    // re-fire an ENTER without you ever leaving (or an EXIT when already gone).
+    if (entering && alreadyOnSite) return;
+    if (!entering && !alreadyOnSite) return;
     await PunchQueue.setClockedIn(entering); // track on/off-site state
     final loc = ev.location;
     await PunchQueue.add(
