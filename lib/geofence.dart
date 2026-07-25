@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'package:flutter_background_geolocation/flutter_background_geolocation.dart'
     as bg;
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'config.dart';
 import 'punch_queue.dart';
 
@@ -8,6 +9,13 @@ import 'punch_queue.dart';
 /// enter/exit even when the app is killed (Android headless task), is battery
 /// friendly, and persists across reboots.
 class Geofence {
+  // The active shop zone. Defaults to the compiled-in values, then gets
+  // refreshed from the database at startup so the admin can move the geofence
+  // from the dashboard WITHOUT rebuilding the APK.
+  static double _lat = Config.zoneLat;
+  static double _lon = Config.zoneLon;
+  static double _radius = Config.clockInRadiusM;
+
   /// Headless handler — runs when the app process is NOT alive.
   @pragma('vm:entry-point')
   static Future<void> headlessTask(bg.HeadlessEvent event) async {
@@ -18,6 +26,10 @@ class Geofence {
   }
 
   static Future<void> init() async {
+    // Pull the live shop zone from the dashboard-editable table (falls back to
+    // the compiled-in values if offline / not reachable).
+    await _loadZone();
+
     // Fire the same handler when the app IS alive.
     bg.BackgroundGeolocation.onGeofence(_record);
 
@@ -32,12 +44,16 @@ class Geofence {
       logLevel: bg.Config.LOG_LEVEL_OFF,
     ));
 
-    // Register the shop zone (enter -> in, exit -> out).
+    // Re-register the shop zone with the latest coordinates (remove any stale
+    // one first so a moved geofence takes effect).
+    try {
+      await bg.BackgroundGeolocation.removeGeofence(Config.geofenceId);
+    } catch (_) {}
     await bg.BackgroundGeolocation.addGeofence(bg.Geofence(
       identifier: Config.geofenceId,
-      radius: Config.clockInRadiusM,
-      latitude: Config.zoneLat,
-      longitude: Config.zoneLon,
+      radius: _radius,
+      latitude: _lat,
+      longitude: _lon,
       notifyOnEntry: true,
       notifyOnExit: true,
       loiteringDelay: 30000, // 30 s dwell before the crossing counts
@@ -47,6 +63,26 @@ class Geofence {
 
     // Handle "already at the shop when the app starts."
     await _syncInitialPresence();
+  }
+
+  /// Fetch the active shop zone from Supabase. Anon-readable via the
+  /// zone-settings-policies.sql grant. Silent fallback to Config on any error.
+  static Future<void> _loadZone() async {
+    try {
+      final rows = await Supabase.instance.client
+          .from('zone_config')
+          .select('center_lat, center_lon, clock_in_radius_m')
+          .eq('active', true)
+          .limit(1);
+      if (rows is List && rows.isNotEmpty) {
+        final z = rows.first as Map;
+        _lat = (z['center_lat'] as num).toDouble();
+        _lon = (z['center_lon'] as num).toDouble();
+        _radius = (z['clock_in_radius_m'] as num).toDouble();
+      }
+    } catch (_) {
+      // Keep the compiled-in fallback values.
+    }
   }
 
   static Future<void> _record(bg.GeofenceEvent ev) async {
@@ -83,9 +119,9 @@ class Geofence {
         desiredAccuracy: 40,
         persist: false,
       );
-      final metres = _distanceM(loc.coords.latitude, loc.coords.longitude,
-          Config.zoneLat, Config.zoneLon);
-      final inside = metres <= Config.clockInRadiusM;
+      final metres = _distanceM(
+          loc.coords.latitude, loc.coords.longitude, _lat, _lon);
+      final inside = metres <= _radius;
       final alreadyOnSite = await PunchQueue.isClockedIn();
 
       if (inside && !alreadyOnSite) {
