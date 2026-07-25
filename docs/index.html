@@ -566,7 +566,7 @@
     }catch(e){ $('rulesMsg').textContent='Save failed: '+e.message; }
   }
 
-  let SUMMARY=[];
+  let SUMMARY=[], WORKDAYS=[];
   async function load(){
     S.start=$('cfgStart').value; S.end=$('cfgEnd').value;
     try{
@@ -576,6 +576,12 @@
       ALL_EMPS=emps; renderCrew();
 
       const wds=await rest(`workdays?work_date=gte.${S.start}&work_date=lte.${S.end}&select=*`);
+      // Per-day rows for the export's "Daily detail" sheet (all statuses, so gaps show).
+      WORKDAYS=wds.map(w=>{ const e=empById[w.employee_id]||{}; return {
+        name:e.full_name||'Unknown', num:e.employee_number||'', work_date:w.work_date,
+        first_in:w.first_in, last_out:w.last_out, paid:+w.paid_hours, reg:+w.reg_hours,
+        ot:+w.ot_hours, status:w.status }; })
+        .sort((a,b)=> a.name.localeCompare(b.name) || a.work_date.localeCompare(b.work_date));
       // "Today" in the shop's timezone (America/Edmonton), not UTC — otherwise
       // morning punches vanish once UTC rolls to the next day.
       const _now=new Date();
@@ -706,6 +712,50 @@
     t.eachCell({includeEmpty:true},c=>{ c.font={bold:true}; c.fill={type:'pattern',pattern:'solid',fgColor:{argb:LT}}; c.border=bd; });
     [26,9,14,18,14,16,12,11].forEach((w,i)=>{ ws.getColumn(i+1).width=w; });
     ws.views=[{state:'frozen',ySplit:hr.number}];
+
+    // ---- Sheet 2: Daily detail, grouped per crew member ----
+    const ws2=wb.addWorksheet('Daily detail',{views:[{showGridLines:false}]});
+    ws2.addRow(['Paragon Protective Coatings — Daily punch detail']);
+    ws2.getCell('A1').font={bold:true,size:14,color:{argb:NAVY}};
+    ws2.addRow(['Pay period',S.start,'to',S.end]); ws2.getCell('A2').font={bold:true};
+    ws2.addRow(['Time in / out are shop-local (America/Edmonton). “+1d” = clocked out after midnight (night shift). Daily hrs = paid hours.']);
+    ws2.getCell('A3').font={size:9,color:{argb:GREY}};
+    ws2.addRow([]);
+    const edFmt=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Edmonton'});
+    const wkFmt=new Intl.DateTimeFormat('en-US',{timeZone:'America/Edmonton',weekday:'short'});
+    const groups={};
+    WORKDAYS.forEach(w=>{ const k=w.name+'||'+w.num; (groups[k]=groups[k]||{name:w.name,num:w.num,days:[]}).days.push(w); });
+    const glist=Object.values(groups).sort((a,b)=>a.name.localeCompare(b.name));
+    if(!glist.length){ ws2.addRow(['No daily records in this period.']); }
+    glist.forEach(g=>{
+      const band=ws2.addRow([`${g.name}${g.num?'   ·   Emp #'+g.num:''}`]);
+      ws2.mergeCells(`A${band.number}:F${band.number}`); band.height=20;
+      band.getCell(1).font={bold:true,color:{argb:'FFFFFFFF'}};
+      band.getCell(1).fill={type:'pattern',pattern:'solid',fgColor:{argb:NAVY}};
+      band.getCell(1).alignment={vertical:'middle'};
+      const hh=ws2.addRow(['Date','Weekday','Time in','Time out','Daily hrs','Status']);
+      hh.eachCell(c=>{ c.font={bold:true,color:{argb:NAVY}}; c.fill={type:'pattern',pattern:'solid',fgColor:{argb:LT}}; c.border=bd; c.alignment={horizontal:'center'}; });
+      let sub=0;
+      g.days.forEach(w=>{
+        const wd=wkFmt.format(new Date(w.work_date+'T12:00:00'));
+        const tin=w.first_in?hm(w.first_in):'—';
+        let tout='—';
+        if(w.last_out){ const cross=edFmt.format(new Date(w.last_out))!==w.work_date; tout=hm(w.last_out)+(cross?' +1d':''); }
+        const closed=w.status==='closed';
+        if(closed) sub+=w.paid;
+        const st=w.status==='needs_review'?'needs review':(w.status==='open'?'open (today)':'');
+        const r=ws2.addRow([w.work_date, wd, tin, tout, closed?w.paid:null, st]);
+        r.getCell(5).numFmt='0.00'; r.getCell(5).alignment={horizontal:'right'};
+        if(st) r.getCell(6).font={color:{argb:'FFC8202F'}};
+        r.eachCell({includeEmpty:true},c=>{c.border=bd;});
+      });
+      const subR=ws2.addRow(['Subtotal',`${g.days.length} day(s)`,'','',sub,'']);
+      subR.getCell(5).numFmt='0.00'; subR.getCell(5).alignment={horizontal:'right'};
+      subR.eachCell({includeEmpty:true},c=>{ c.font={bold:true}; c.fill={type:'pattern',pattern:'solid',fgColor:{argb:'FFF4F6FA'}}; c.border=bd; });
+      ws2.addRow([]);
+    });
+    [13,10,11,12,11,16].forEach((w,i)=>{ ws2.getColumn(i+1).width=w; });
+
     const buf=await wb.xlsx.writeBuffer();
     dl(new Blob([buf],{type:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}), `PPC_QBO_payroll_${S.start}_to_${S.end}.xlsx`);
     toast('QBO payroll log exported (.xlsx)');
