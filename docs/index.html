@@ -4,6 +4,8 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Paragon Time Clock — Admin</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
 <style>
   :root{
     --bg:#eef1f6;--panel:#ffffff;--panel-2:#f4f6fa;--raise:#e9edf3;
@@ -202,6 +204,12 @@
     <div class="card">
       <div class="card-h"><h2>Shop geofence</h2></div>
       <div class="addrow" style="flex-direction:column;align-items:stretch;gap:12px">
+        <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <input class="f" id="zSearch" placeholder="Jump to a town or address (e.g. Nisku, AB)" style="flex:1;min-width:200px">
+          <button class="btn" id="zGo">Find</button>
+        </div>
+        <div id="zoneMap" style="height:300px;width:100%;border-radius:12px;border:1px solid var(--line)"></div>
+        <span class="note" style="margin:0">Pan/zoom anywhere in Canada, then click the map (or drag the red dot) to place the shop. Drag the white handle to resize. The boxes below fill in as you move.</span>
         <div style="display:flex;gap:12px;flex-wrap:wrap">
           <div><label class="mini">Latitude</label><input class="f" id="zLat" inputmode="decimal" placeholder="53.513522" style="width:150px"></div>
           <div><label class="mini">Longitude</label><input class="f" id="zLon" inputmode="decimal" placeholder="-113.357603" style="width:150px"></div>
@@ -450,6 +458,7 @@
         $('zLat').value=ZONE.center_lat; $('zLon').value=ZONE.center_lon;
         $('zRin').value=ZONE.clock_in_radius_m; $('zRout').value=ZONE.clock_out_radius_m; }
     }catch(_){}
+    initZoneMap();
     try{
       const pr=await rest('payroll_settings?active=eq.true&select=*&limit=1');
       if(pr && pr[0]){ SET=pr[0];
@@ -479,9 +488,60 @@
     $('zoneMsg').textContent='Getting this device’s location…';
     navigator.geolocation.getCurrentPosition(
       p=>{ $('zLat').value=p.coords.latitude.toFixed(6); $('zLon').value=p.coords.longitude.toFixed(6);
-           $('zoneMsg').textContent='Filled from this device — review, then Save.'; },
+           syncMapFromInputs(); $('zoneMsg').textContent='Filled from this device — review, then Save.'; },
       _=>{ $('zoneMsg').textContent='Location denied or unavailable.'; },
       {enableHighAccuracy:true,timeout:10000});
+  }
+
+  // ---- Visual geofence map (Leaflet + OpenStreetMap; no API key) ----
+  let ZMAP=null,ZCENTER=null,ZCIRCLE=null,ZEDGE=null;
+  function _cIcon(){return L.divIcon({className:'',html:'<div style="width:18px;height:18px;border-radius:50%;background:#c8202f;border:3px solid #fff;box-shadow:0 1px 6px rgba(0,0,0,.55)"></div>',iconSize:[18,18],iconAnchor:[9,9]});}
+  function _eIcon(){return L.divIcon({className:'',html:'<div style="width:15px;height:15px;border-radius:50%;background:#fff;border:3px solid #c8202f;box-shadow:0 1px 5px rgba(0,0,0,.5);cursor:ew-resize"></div>',iconSize:[15,15],iconAnchor:[7,7]});}
+  function _edge(lat,lon,r){const dLon=r/(111320*Math.cos(lat*Math.PI/180));return [lat, lon+dLon];}
+  function initZoneMap(){
+    if(typeof L==='undefined') return;               // Leaflet not loaded yet
+    if(ZMAP){ syncMapFromInputs(); ZMAP.invalidateSize(); return; }
+    if(!document.getElementById('zoneMap')) return;
+    const lat=parseFloat($('zLat').value)||53.513522, lon=parseFloat($('zLon').value)||-113.357603, r=parseInt($('zRin').value,10)||100;
+    ZMAP=L.map('zoneMap',{scrollWheelZoom:true}).setView([lat,lon],17);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:20,attribution:'&copy; OpenStreetMap'}).addTo(ZMAP);
+    ZCIRCLE=L.circle([lat,lon],{radius:r,color:'#c8202f',weight:2,fillColor:'#c8202f',fillOpacity:.12}).addTo(ZMAP);
+    ZCENTER=L.marker([lat,lon],{draggable:true,icon:_cIcon(),title:'Shop centre — drag to move'}).addTo(ZMAP);
+    ZEDGE=L.marker(_edge(lat,lon,r),{draggable:true,icon:_eIcon(),title:'Drag to change size'}).addTo(ZMAP);
+    ZCENTER.on('drag',()=>{const p=ZCENTER.getLatLng(); _setCenter(p.lat,p.lng,false);});
+    ZMAP.on('click',(ev)=>{_setCenter(ev.latlng.lat,ev.latlng.lng,true);});
+    ZEDGE.on('drag',()=>{const c=ZCENTER.getLatLng(),e=ZEDGE.getLatLng(); const nr=Math.max(20,Math.min(5000,Math.round(c.distanceTo(e)))); $('zRin').value=nr; if(ZCIRCLE)ZCIRCLE.setRadius(nr);});
+    ZEDGE.on('dragend',()=>{const c=ZCENTER.getLatLng(); const nr=parseInt($('zRin').value,10)||100; ZEDGE.setLatLng(_edge(c.lat,c.lng,nr));});
+    setTimeout(()=>{if(ZMAP)ZMAP.invalidateSize();},250);
+  }
+  function _setCenter(lat,lon,recenter){
+    $('zLat').value=lat.toFixed(6); $('zLon').value=lon.toFixed(6);
+    const r=parseInt($('zRin').value,10)||100;
+    if(ZCIRCLE)ZCIRCLE.setLatLng([lat,lon]);
+    if(ZCENTER)ZCENTER.setLatLng([lat,lon]);
+    if(ZEDGE)ZEDGE.setLatLng(_edge(lat,lon,r));
+    if(recenter && ZMAP)ZMAP.panTo([lat,lon]);
+  }
+  function syncMapFromInputs(){
+    if(!ZMAP) return;
+    const lat=parseFloat($('zLat').value),lon=parseFloat($('zLon').value),r=parseInt($('zRin').value,10);
+    if(isFinite(lat)&&isFinite(lon)){ if(ZCIRCLE)ZCIRCLE.setLatLng([lat,lon]); if(ZCENTER)ZCENTER.setLatLng([lat,lon]); ZMAP.panTo([lat,lon]); }
+    if(isFinite(r)&&ZCIRCLE)ZCIRCLE.setRadius(r);
+    if(isFinite(lat)&&isFinite(lon)&&isFinite(r)&&ZEDGE)ZEDGE.setLatLng(_edge(lat,lon,r));
+  }
+  async function zoneSearch(){
+    const q=($('zSearch').value||'').trim(); if(!q){return;}
+    $('zoneMsg').textContent='Searching…';
+    try{
+      const url='https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=ca&q='+encodeURIComponent(q);
+      const r=await fetch(url,{headers:{'Accept':'application/json'}});
+      const j=await r.json();
+      if(!j.length){ $('zoneMsg').textContent='No match found — try a nearby town or a full address.'; return; }
+      const lat=parseFloat(j[0].lat), lon=parseFloat(j[0].lon);
+      if(ZMAP)ZMAP.setView([lat,lon],16);
+      _setCenter(lat,lon,true);
+      $('zoneMsg').textContent='Moved to '+ (j[0].display_name||q).split(',').slice(0,2).join(',') +' — fine-tune by dragging, then Save.';
+    }catch(e){ $('zoneMsg').textContent='Search unavailable right now — pan the map instead.'; }
   }
   async function saveRules(){
     const body={
@@ -591,6 +651,9 @@
   $('addCrew').onclick=addCrew;
   $('saveZone').onclick=saveZone;
   $('useHere').onclick=useHere;
+  $('zGo').onclick=zoneSearch;
+  $('zSearch').addEventListener('keydown',e=>{ if(e.key==='Enter'){ e.preventDefault(); zoneSearch(); }});
+  ['zLat','zLon','zRin'].forEach(id=>{ const el=$(id); if(el) el.addEventListener('input',syncMapFromInputs); });
   $('saveRules').onclick=saveRules;
   $('showRemoved').onchange=renderCrew;
   $('cfgStart').onchange=load; $('cfgEnd').onchange=load;
