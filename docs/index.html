@@ -192,7 +192,7 @@
     </table></div>
   </div>
 
-  <div class="section-title"><h2>Pay-period hours</h2><div class="r"><button class="btn primary" id="export">Export hours (.csv)</button></div></div>
+  <div class="section-title"><h2>Pay-period hours</h2><div class="r"><button class="btn primary" id="export">Export for QuickBooks (.csv)</button></div></div>
   <div class="card">
     <div style="overflow-x:auto"><table>
       <thead><tr><th>Employee</th><th>Role</th><th class="num">Days</th><th class="num">Regular</th><th class="num">Overtime</th><th class="num">Total</th></tr></thead>
@@ -665,11 +665,20 @@
     catch(e){toast('Recompute failed: '+e.message);}
   };
   $('export').onclick=()=>{
-    let rows=[['Employee','Emp #','Role','Days','Regular','Overtime','Total']];
-    SUMMARY.forEach(s=>rows.push([s.name,s.num||'',s.role||'',s.days,s.reg.toFixed(2),s.ot.toFixed(2),(s.reg+s.ot).toFixed(2)]));
-    const csv=rows.map(r=>r.map(c=>`"${c}"`).join(',')).join('\n');
+    const q=v=>`"${String(v).replace(/"/g,'""')}"`;
+    const rows=[];
+    rows.push(['Paragon Protective Coatings — Payroll Hours Log']);
+    rows.push(['Pay period', S.start, 'to', S.end]);
+    rows.push(['Enter Regular + Overtime into QuickBooks Online → Payroll → Run payroll. Emp # matches each QuickBooks employee. Vacation / Stat holiday / Bonus are filled in by the payroll admin.']);
+    rows.push([]);
+    rows.push(['Employee','Emp #','Regular (hrs)','Overtime 1.5x (hrs)','Vacation (hrs)','Stat holiday (hrs)','Bonus ($)','Total hrs']);
+    let tr=0,to=0;
+    SUMMARY.forEach(s=>{ tr+=s.reg; to+=s.ot;
+      rows.push([s.name, s.num||'', s.reg.toFixed(2), s.ot.toFixed(2), '', '', '', (s.reg+s.ot).toFixed(2)]); });
+    rows.push(['TOTALS','',tr.toFixed(2),to.toFixed(2),'','','',(tr+to).toFixed(2)]);
+    const csv=rows.map(r=>r.map(q).join(',')).join('\r\n');
     const a=document.createElement('a'); a.href=URL.createObjectURL(new Blob([csv],{type:'text/csv'}));
-    a.download=`PPC_hours_${S.start}_to_${S.end}.csv`; a.click(); toast('Hours exported');
+    a.download=`PPC_QBO_payroll_${S.start}_to_${S.end}.csv`; a.click(); toast('QBO payroll log exported');
   };
 
   // ---- live shop clock (America/Edmonton) ----
