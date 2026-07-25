@@ -17,5 +17,19 @@ dependencies:
   shared_preferences: ^2.2.0
   connectivity_plus: ^6.0.0
 
+dev_dependencies:
+  # Generates the Android launcher icon (black PPC shield) at build time.
+  flutter_launcher_icons: ^0.13.1
+
 flutter:
   uses-material-design: true
+  assets:
+    - assets/icon/
+
+# Black PPC shield launcher icon. Regenerated in CI before the APK build.
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/icon/app_icon.png"
+  adaptive_icon_background: "#000000"
+  adaptive_icon_foreground: "assets/icon/app_icon_fg.png"
