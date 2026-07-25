@@ -27,7 +27,7 @@ jobs:
       - name: Stash our app source
         run: |
           mkdir -p /tmp/appsrc
-          cp -r lib pubspec.yaml /tmp/appsrc/
+          cp -r lib pubspec.yaml assets /tmp/appsrc/
 
       - name: Scaffold the Android project
         run: |
@@ -35,8 +35,9 @@ jobs:
 
       - name: Restore our app source over the scaffold
         run: |
-          rm -rf lib pubspec.yaml
+          rm -rf lib pubspec.yaml assets
           cp -r /tmp/appsrc/lib .
+          cp -r /tmp/appsrc/assets .
           cp /tmp/appsrc/pubspec.yaml .
 
       - name: Add Android permissions to the manifest
@@ -149,6 +150,9 @@ jobs:
 
       - name: Get packages
         run: flutter pub get
+
+      - name: Generate the launcher icon (black PPC shield)
+        run: dart run flutter_launcher_icons
 
       - name: Build APK (debug — installable, no keystore needed)
         run: flutter build apk --debug
