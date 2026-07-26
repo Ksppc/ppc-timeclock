@@ -59,7 +59,11 @@ class Geofence {
       loiteringDelay: 30000, // 30 s dwell before the crossing counts
     ));
 
-    await bg.BackgroundGeolocation.start();
+    // Geofence-ONLY mode: no continuous location tracking. When the phone is
+    // away from the shop, GPS is OFF and the OS watches for the zone crossing
+    // at low power; GPS only activates as the phone nears the boundary. This is
+    // much lighter on battery than start(), which tracks location all day.
+    await bg.BackgroundGeolocation.startGeofences();
 
     // Handle "already at the shop when the app starts."
     await _syncInitialPresence();
