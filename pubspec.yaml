@@ -11,6 +11,12 @@ dependencies:
     sdk: flutter
   # Robust background geofencing (enter/exit even when app is killed).
   flutter_background_geolocation: ^4.16.0
+  # Android's supported mechanism for periodic work that must ACTUALLY run —
+  # survives Doze, app termination and reboot. Ships as a dependency of the
+  # geolocation plugin, declared here so we can import it directly.
+  # This replaces heartbeatInterval, which does not fire on Android while the
+  # device is stationary (verified: zero heartbeat pings in a 10-hour shift).
+  background_fetch: ^1.3.0
   # Supabase client for inserting punches.
   supabase_flutter: ^2.5.0
   # Local offline queue.
