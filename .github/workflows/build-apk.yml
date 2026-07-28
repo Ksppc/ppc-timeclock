@@ -160,12 +160,29 @@ jobs:
       - name: Generate the launcher icon (black PPC shield)
         run: dart run flutter_launcher_icons
 
+      # --split-per-abi builds one APK per CPU architecture instead of a single
+      # fat one carrying all of them. The old combined debug APK was 161 MB,
+      # most of which was machine code for chips the phone does not have.
       - name: Build APK (debug — installable, no keystore needed)
-        run: flutter build apk --debug
+        run: flutter build apk --debug --split-per-abi
+
+      # Name the outputs for humans. arm64 is every Android phone made since
+      # roughly 2017 — that is the one crew install. v7a is kept only as a
+      # fallback for genuinely old hardware.
+      - name: Name the APKs for the crew
+        run: |
+          cd build/app/outputs/flutter-apk
+          ls -la
+          mkdir -p /tmp/out
+          cp app-arm64-v8a-debug.apk   /tmp/out/PPC-TimeClock.apk
+          if [ -f app-armeabi-v7a-debug.apk ]; then
+            cp app-armeabi-v7a-debug.apk /tmp/out/PPC-TimeClock-old-phones.apk
+          fi
+          ls -la /tmp/out
 
       - name: Upload the APK
         uses: actions/upload-artifact@v4
         with:
           name: ppc-timeclock-apk
-          path: build/app/outputs/flutter-apk/app-debug.apk
+          path: /tmp/out/*.apk
           if-no-files-found: error
