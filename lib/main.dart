@@ -211,19 +211,40 @@ class _HomeScreenState extends State<HomeScreen> {
     ));
 
     // 5. Shop Wi-Fi — the backup presence signal.
+    //
+    // NEVER a blocker. Wi-Fi is an extra signal for indoors, not a requirement:
+    // the clock works on GPS alone. Being off the shop network is the normal,
+    // correct state everywhere except the shop itself, so flagging it red made
+    // the app cry wolf every evening — and a checklist that shows a false alarm
+    // every night is a checklist people stop reading.
     final ssid = Geofence.wifiSsid;
     final onWifi = await Presence.onShopWifi(ssid);
+    final nowOn = await Presence.currentSsid();
+
+    // Always say what network we are actually on. Standing in the shop, this
+    // line IS the answer to "what is the shop network called" — read it off the
+    // phone and type it into the dashboard once.
+    final youAreOn = nowOn == null
+        ? 'This phone is not on Wi-Fi right now.'
+        : 'This phone is on: $nowOn';
+
     out.add(_Check(
       'Shop Wi-Fi backup',
       ssid == null || ssid.isEmpty
-          ? 'No shop network configured — running on GPS alone.'
+          ? '$youAreOn\n\nNo shop network is set yet, so the clock is running '
+              'on GPS alone — which works. To switch the indoor backup on, an '
+              'admin enters the shop network name in the dashboard under '
+              '"Shop zone & rules".'
           : onWifi == true
-              ? 'Connected to $ssid. Presence confirmed even without GPS.'
+              ? '$youAreOn\n\nThat is the shop network. You stay covered even '
+                  'where GPS cannot reach, like inside the building.'
               : onWifi == false
-                  ? 'Not on $ssid right now. Join it at the shop and this '
-                      'phone stays covered indoors where GPS fails.'
-                  : 'Cannot read the Wi-Fi name on this phone. GPS only.',
-      ok: onWifi == true || ssid == null || ssid.isEmpty,
+                  ? '$youAreOn\n\nThe shop network is set to "$ssid", so the '
+                      'indoor backup is idle until you join it. Normal when '
+                      'you are away from the shop — nothing to do.'
+                  : '$youAreOn\n\nThis phone will not report its network name, '
+                      'so the clock runs on GPS alone. Nothing to do.',
+      ok: true,
       warn: onWifi != true,
     ));
 

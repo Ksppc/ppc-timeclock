@@ -98,6 +98,26 @@ class Presence {
     }
   }
 
+  /// The network this phone is joined to right now, or null if we cannot tell.
+  ///
+  /// Display only. The app deliberately cannot WRITE the shop network: it runs
+  /// on the public anon key, so the database has no way to tell one crew member
+  /// from another. If any phone could set the shop SSID, anyone could point it
+  /// at their own home network and be counted on site from their couch — and
+  /// the reconciler would faithfully back that up. Setting the shop network is
+  /// an admin action, done from the dashboard behind a real login.
+  static Future<String?> currentSsid() async {
+    try {
+      final raw = await NetworkInfo().getWifiName();
+      if (raw == null) return null;
+      final ssid = _clean(raw);
+      if (ssid.isEmpty || ssid.toLowerCase() == 'unknown ssid') return null;
+      return ssid;
+    } catch (_) {
+      return null;
+    }
+  }
+
   /// Android returns the SSID wrapped in quotes, sometimes with whitespace.
   static String _clean(String s) {
     var v = s.trim();
