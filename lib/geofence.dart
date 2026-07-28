@@ -2,7 +2,9 @@ import 'dart:math';
 import 'package:flutter_background_geolocation/flutter_background_geolocation.dart'
     as bg;
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
+// supabase_flutter re-exports a `Presence` class from realtime_client, which
+// collides with our own Presence reporter. We never use the realtime one.
+import 'package:supabase_flutter/supabase_flutter.dart' hide Presence;
 import 'config.dart';
 import 'punch_queue.dart';
 import 'presence.dart';
