@@ -16,6 +16,12 @@ dependencies:
   # Local offline queue.
   shared_preferences: ^2.2.0
   connectivity_plus: ^6.0.0
+  # Reads the connected Wi-Fi SSID. Second presence signal: inside a steel
+  # building GPS can read as "off site" while the person is standing in the
+  # shop, and being joined to the shop network proves otherwise at no battery
+  # cost. If this package ever breaks the build it can be removed — see
+  # Presence.onShopWifi(), which fails soft to "no opinion".
+  network_info_plus: ^5.0.0
 
 dev_dependencies:
   # Generates the Android launcher icon (black PPC shield) at build time.
