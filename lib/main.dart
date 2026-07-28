@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_background_geolocation/flutter_background_geolocation.dart'
     as bg;
+import 'package:background_fetch/background_fetch.dart' as bf;
 // supabase_flutter re-exports a `Presence` class from realtime_client, which
 // collides with our own Presence reporter. We never use the realtime one.
 import 'package:supabase_flutter/supabase_flutter.dart' hide Presence;
@@ -18,7 +19,11 @@ const _pamber = Color(0xFFB57200);
 
 void main() {
   runApp(const PpcApp());
+  // Geofence crossings while the app is dead.
   bg.BackgroundGeolocation.registerHeadlessTask(Geofence.headlessTask);
+  // The periodic position check while the app is dead. This is the layer that
+  // guarantees a departure is noticed even when no geofence event ever fires.
+  bf.BackgroundFetch.registerHeadlessTask(Geofence.fetchHeadlessTask);
 }
 
 class PpcApp extends StatelessWidget {

@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'package:flutter_background_geolocation/flutter_background_geolocation.dart'
     as bg;
+import 'package:background_fetch/background_fetch.dart' as bf;
 import 'package:shared_preferences/shared_preferences.dart';
 // supabase_flutter re-exports a `Presence` class from realtime_client, which
 // collides with our own Presence reporter. We never use the realtime one.
@@ -65,6 +66,82 @@ class Geofence {
     }
   }
 
+  // -------------------------------------------------------------------------
+  //  THE GUARANTEED CLOCK.
+  //
+  //  `heartbeatInterval` does not fire on Android when the device is stationary
+  //  — which is precisely when a phone is sitting in a shop all afternoon. On
+  //  28 July 2026 it produced ZERO pings across a ten-hour shift, and a missed
+  //  geofence exit had to be reconstructed from a single incidental motion ping.
+  //
+  //  `background_fetch` is Android's supported mechanism for work that must
+  //  actually happen: it runs through Doze, through app termination, and after
+  //  reboot. This is the floor under everything else.
+  // -------------------------------------------------------------------------
+
+  /// Headless entry point for the periodic task — runs with the app terminated.
+  @pragma('vm:entry-point')
+  static Future<void> fetchHeadlessTask(bf.HeadlessEvent event) async {
+    if (event.timeout) {
+      await bf.BackgroundFetch.finish(event.taskId);
+      return;
+    }
+    try {
+      await _ensureSupabase();
+      await _loadZone();
+      await _periodicCheck();
+    } catch (_) {
+    } finally {
+      // Must always finish, or Android throttles us for overrunning.
+      await bf.BackgroundFetch.finish(event.taskId);
+    }
+  }
+
+  /// Register the periodic task. Call once from main().
+  static Future<void> initPeriodic() async {
+    try {
+      await bf.BackgroundFetch.configure(
+        bf.BackgroundFetchConfig(
+          minimumFetchInterval: 15, // Android's floor; asking for less is ignored
+          stopOnTerminate: false,
+          startOnBoot: true,
+          enableHeadless: true,
+          requiresBatteryNotLow: false,
+          requiresCharging: false,
+          requiresStorageNotLow: false,
+          requiresDeviceIdle: false,
+          requiredNetworkType: bf.NetworkType.NONE,
+          // JobScheduler throttles by battery and usage patterns. Payroll is not
+          // a good place for "the OS decided to skip a few". AlarmManager costs
+          // a little more battery and actually runs.
+          forceAlarmManager: true,
+        ),
+        (String taskId) async {
+          try {
+            await _periodicCheck();
+          } catch (_) {}
+          await bf.BackgroundFetch.finish(taskId);
+        },
+        (String taskId) async {
+          await bf.BackgroundFetch.finish(taskId);
+        },
+      );
+      await bf.BackgroundFetch.start();
+    } catch (_) {
+      // Never let a scheduling failure take the app down — the geofence and
+      // Wi-Fi layers still work without it.
+    }
+  }
+
+  /// What the periodic task actually does: flush anything stuck, then — only if
+  /// on the clock — report where this phone is.
+  static Future<void> _periodicCheck() async {
+    await PunchQueue.flush();
+    await Presence.flush();
+    if (!await PunchQueue.isClockedIn()) return; // off the clock: costs nothing
+    await _reportPosition(reason: 'fetch');
+  }
+
   /// Safe to call repeatedly and from any isolate.
   static Future<void> _ensureSupabase() async {
     try {
@@ -93,6 +170,26 @@ class Geofence {
       if (now - last < 120000) return; // at most one motion ping every 2 min
       await prefs.setInt(_lastPingKey, now);
       await _pingFrom(l, reason: 'motion');
+    });
+
+    // Wi-Fi as a FIRST-CLASS signal, not an afterthought.
+    //
+    // For a fixed shop this is the best presence indicator there is: it changes
+    // the instant you join or leave the network, it works inside a steel
+    // building where GPS cannot, and it costs almost no battery. Joining or
+    // dropping the shop network is a strong statement about where the phone is,
+    // so record a ping the moment connectivity changes rather than waiting for
+    // the next scheduled check.
+    bg.BackgroundGeolocation.onConnectivityChange(
+        (bg.ConnectivityChangeEvent e) async {
+      if (!await PunchQueue.isClockedIn()) return;
+      final wifi = await Presence.onShopWifi(_wifiSsid);
+      if (wifi == null) return; // phone won't say — nothing to record
+      await Presence.ping(
+        insideGeofence: wifi,
+        insideWifi: wifi,
+        reason: wifi ? 'wifi-joined' : 'wifi-left',
+      );
     });
 
     // If location services get switched off while someone is on the clock,
@@ -131,6 +228,7 @@ class Geofence {
 
     await _registerZones();
     await bg.BackgroundGeolocation.start();
+    await initPeriodic(); // the guaranteed 15-minute clock
     await _syncInitialPresence();
   }
 

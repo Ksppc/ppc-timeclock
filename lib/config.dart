@@ -21,23 +21,34 @@ class Config {
   /// Enter this radius -> clock in.
   static const double clockInRadiusM = 100;
 
-  /// Leave THIS radius -> clock out. Deliberately larger than the clock-in
-  /// radius: the 25 m band between the two is what stops GPS jitter at the
-  /// boundary from punching you out and back in all day.
+  /// Leave THIS radius -> clock out. Deliberately much larger than the clock-in
+  /// radius. Two reasons:
   ///
-  /// This is now a real second geofence (see geofence.dart). It is NOT, as an
-  /// earlier build's comment here claimed, handled by the plugin's exit
-  /// debounce — `loiteringDelay` applies to DWELL events only and never had
-  /// any effect on exits. The buffer did not exist until this build.
-  static const double clockOutRadiusM = 125;
+  ///   1. The band between the two stops GPS jitter at the boundary punching
+  ///      you out and back in all day.
+  ///   2. Android geofence reliability improves sharply with radius. At 125 m,
+  ///      against a phone reporting 15-20 m accuracy, exits were simply not
+  ///      firing — on 27 and 28 July neither day produced a GPS clock-out.
+  ///
+  /// Widened from 125 m to 200 m on 28 July. The cost is a few seconds of paid
+  /// time while driving off the property; the benefit is the exit event
+  /// actually happening.
+  static const double clockOutRadiusM = 200;
 
   /// Shop Wi-Fi network. A phone joined to this SSID counts as on site even
   /// when GPS is useless indoors. Empty string = GPS only.
   static const String shopWifiSsid = 'PPC-SHOP';
 
-  /// How often a CLOCKED-IN phone reports its position, in seconds. Pings stop
-  /// entirely when off the clock, so this costs battery during the workday and
-  /// nothing overnight.
+  /// Legacy heartbeat interval, in seconds.
+  ///
+  /// KEPT ONLY AS A BONUS. Do not rely on it: on Android `heartbeatInterval`
+  /// does not fire while the device is stationary, which is exactly the case
+  /// this system needs covered — a phone sitting in a shop all afternoon. It
+  /// produced zero pings across a ten-hour shift on 28 July 2026.
+  ///
+  /// The guaranteed periodic check is `background_fetch` (see
+  /// Geofence.initPeriodic), which runs through Doze, app termination and
+  /// reboot. If it fires as well, that is a free extra sample.
   static const int heartbeatSeconds = 900; // 15 min
 
   /// How far from the shop the plugin keeps the geofence actively monitored.
