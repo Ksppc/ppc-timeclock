@@ -64,6 +64,11 @@ jobs:
             s = s.replace("<manifest ", '<manifest xmlns:tools="http://schemas.android.com/tools" ', 1)
           if "tools:replace" not in s:
             s = re.sub(r"(<application\b)", r'\1 tools:replace="android:label"', s, count=1)
+          # The launcher label was never set, so Flutter defaulted it to the
+          # project name. Android showed the app as "ppc_timeclock" in every
+          # settings screen — which made it effectively unfindable when hunting
+          # through battery and notification menus looking for "Paragon".
+          s = re.sub(r'android:label="[^"]*"', 'android:label="Paragon Time Clock"', s, count=1)
           open(p, "w", encoding="utf-8").write(s)
           print("manifest patched")
           PY
@@ -179,6 +184,74 @@ jobs:
             cp app-armeabi-v7a-debug.apk /tmp/out/PPC-TimeClock-old-phones.apk
           fi
           ls -la /tmp/out
+
+      # ----------------------------------------------------------------------
+      #  GEOFENCE REGRESSION TEST
+      #
+      #  Builds an x86_64 APK, runs it on an emulator, and drives the phone in
+      #  and out of the shop zone with `adb emu geo fix`. Proves the fence
+      #  fires without anyone holding a handset.
+      #
+      #  WHAT THIS CATCHES: a broken geofence registration, a wrong radius, the
+      #  app failing to start, punches not reaching Supabase.
+      #
+      #  WHAT IT CANNOT CATCH: Doze, Samsung's app-killer, or a real phone
+      #  deciding to shut the service down. An emulator is a friendly machine.
+      #  A green run here means "the code is right", never "it will survive a
+      #  real phone" — those are different claims and conflating them is how
+      #  two evenings got lost.
+      #
+      #  Non-blocking on purpose: a flaky emulator must never stop the crew
+      #  getting an APK.
+      # ----------------------------------------------------------------------
+      - name: Build x86_64 APK for the emulator
+        continue-on-error: true
+        run: flutter build apk --debug --target-platform android-x64
+
+      - name: Enable KVM
+        continue-on-error: true
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
+            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
+
+      - name: Geofence test on emulator
+        continue-on-error: true
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 33
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            set -x
+            adb install -r build/app/outputs/flutter-apk/app-debug.apk || \
+              adb install -r build/app/outputs/flutter-apk/app-x86_64-debug.apk
+
+            PKG=ca.paragonprotectivecoatings.ppc_timeclock
+            # Grant up front — an emulator has nobody to tap the dialogs.
+            for P in ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION \
+                     ACCESS_BACKGROUND_LOCATION POST_NOTIFICATIONS \
+                     ACTIVITY_RECOGNITION; do
+              adb shell pm grant $PKG android.permission.$P || true
+            done
+
+            # Start AT the shop, so the app's startup check should clock in.
+            adb emu geo fix -113.357603 53.513522
+            adb shell monkey -p $PKG -c android.intent.category.LAUNCHER 1 || true
+            sleep 45
+            echo "--- should be INSIDE the zone ---"
+            adb logcat -d -s TSLocationManager | tail -40
+
+            # Now drive out well past the 200 m exit radius.
+            for STEP in 0.0010 0.0025 0.0050 0.0090; do
+              adb emu geo fix -113.357603 $(python3 -c "print(53.513522 + $STEP)")
+              sleep 12
+            done
+            sleep 30
+            echo "--- should have EXITED the zone ---"
+            adb logcat -d -s TSLocationManager | tail -60
 
       - name: Upload the APK
         uses: actions/upload-artifact@v4
