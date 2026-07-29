@@ -436,7 +436,41 @@ class Geofence {
       lon: loc.coords.longitude,
       accuracy: loc.coords.accuracy,
       reason: reason,
+      appState: await describeState(),
     );
+  }
+
+  /// A one-line snapshot of what the tracking engine is actually doing.
+  ///
+  /// This exists because on 28 July the app restarted three times in 45 minutes
+  /// with no heartbeat and no fetch pings, and nothing in the data could
+  /// distinguish "the OS killed us" from "the tracking engine was never
+  /// running". Every explanation offered that evening, mine included, was
+  /// inference. Now the app says so itself.
+  static Future<String> describeState() async {
+    final bits = <String>[];
+    try {
+      final s = await bg.BackgroundGeolocation.state;
+      bits.add('enabled=${s.enabled}');
+      bits.add('moving=${s.isMoving}');
+      bits.add('trackingMode=${s.trackingMode}');
+      // NB: this is the CONFIGURED value inherited from Config, not proof the
+      // service is currently alive. Treat it as "we asked for one", and use the
+      // gaps between pings to judge whether we actually got one.
+      bits.add('fgServiceCfg=${s.foregroundService}');
+    } catch (e) {
+      bits.add('state=unavailable');
+    }
+    try {
+      bits.add(
+          'battExempt=${await bg.DeviceSettings.isIgnoringBatteryOptimizations}');
+    } catch (_) {}
+    try {
+      final st = await bg.BackgroundGeolocation.providerState;
+      bits.add('locAuth=${st.status}');
+      bits.add('locOn=${st.enabled}');
+    } catch (_) {}
+    return bits.join(' ');
   }
 
   // -------------------------------------------------------------------------

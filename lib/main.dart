@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_background_geolocation/flutter_background_geolocation.dart'
     as bg;
 import 'package:background_fetch/background_fetch.dart' as bf;
+import 'package:permission_handler/permission_handler.dart' as ph;
 // supabase_flutter re-exports a `Presence` class from realtime_client, which
 // collides with our own Presence reporter. We never use the realtime one.
 import 'package:supabase_flutter/supabase_flutter.dart' hide Presence;
@@ -137,6 +138,15 @@ class _HomeScreenState extends State<HomeScreen> {
     // and corrects the clock if it disagrees. Previously this screen only re-read
     // permissions, so a phone sitting at the shop while wrongly clocked out had
     // no way to notice — force-closing the app was the only remedy.
+    // Ask for notification permission on the very first run, rather than
+    // waiting for someone to notice a red row. Android only shows this prompt
+    // once, so asking early matters.
+    try {
+      if (!await ph.Permission.notification.isGranted) {
+        await ph.Permission.notification.request();
+      }
+    } catch (_) {}
+
     try {
       await Geofence.reconcilePresenceNow(reason: 'app-opened');
     } catch (_) {}
@@ -182,7 +192,39 @@ class _HomeScreenState extends State<HomeScreen> {
             },
     ));
 
-    // 3. Battery optimisation — the big one. Android will otherwise put the
+    // 3. Notifications. Not cosmetic.
+    //
+    //    The clock runs as a foreground service, and Android requires a
+    //    foreground service to display a persistent notification. Since
+    //    Android 13 that notification needs permission the user must grant —
+    //    and this app never asked for it, so it was denied from the moment it
+    //    was installed. The result: no visible notification, and no way to
+    //    confirm the service was alive. On 28 July the app restarted three
+    //    times in 45 minutes while battery settings were confirmed
+    //    Unrestricted, and this is the most likely reason.
+    bool notifOk = true;
+    try {
+      notifOk = await ph.Permission.notification.isGranted;
+    } catch (_) {}
+    out.add(_Check(
+      'Allow notifications',
+      notifOk
+          ? 'Granted. You should see a permanent "Paragon Time Clock" '
+              'notification — that is the clock running. Do not turn it off.'
+          : 'Blocked. The clock runs as a background service, and Android only '
+              'lets it keep running if it can show a permanent notification. '
+              'Without this it can be shut down without warning and your hours '
+              'stop recording.',
+      ok: notifOk,
+      fixLabel: notifOk ? null : 'Allow',
+      fix: notifOk
+          ? null
+          : () async {
+              await ph.Permission.notification.request();
+            },
+    ));
+
+    // 4. Battery optimisation — the big one. Android will otherwise put the
     //    app to sleep mid-shift and the clock-out never happens.
     bool ignoring = false;
     try {

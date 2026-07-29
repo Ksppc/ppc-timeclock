@@ -30,6 +30,7 @@ class Presence {
     double? accuracy,
     DateTime? at,
     String reason = 'heartbeat',
+    String? appState,
   }) async {
     final row = {
       'employee_id': await Identity.effectiveId(),
@@ -40,6 +41,10 @@ class Presence {
       'inside_geofence': insideGeofence,
       'inside_wifi': insideWifi,
       'reason': reason,
+      // What the tracking engine itself was doing at this moment. Without it,
+      // a silent phone is indistinguishable from a phone that is simply at
+      // home — and we spent an evening guessing between those two.
+      'app_state': appState,
       'device_id': 'android',
     };
     final prefs = await SharedPreferences.getInstance();
