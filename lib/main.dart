@@ -132,6 +132,15 @@ class _HomeScreenState extends State<HomeScreen> {
   // -------------------------------------------------------------------------
   Future<void> _runChecks() async {
     setState(() => _checking = true);
+
+    // Opening the app, or pulling to refresh, now also asks "where am I really?"
+    // and corrects the clock if it disagrees. Previously this screen only re-read
+    // permissions, so a phone sitting at the shop while wrongly clocked out had
+    // no way to notice — force-closing the app was the only remedy.
+    try {
+      await Geofence.reconcilePresenceNow(reason: 'app-opened');
+    } catch (_) {}
+
     final out = <_Check>[];
 
     // 1. Location permission — must be "Allow all the time".

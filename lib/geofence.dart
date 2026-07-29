@@ -133,13 +133,69 @@ class Geofence {
     }
   }
 
-  /// What the periodic task actually does: flush anything stuck, then — only if
-  /// on the clock — report where this phone is.
+  /// What the periodic task actually does: flush anything stuck, then make the
+  /// clock agree with reality.
   static Future<void> _periodicCheck() async {
     await PunchQueue.flush();
     await Presence.flush();
-    if (!await PunchQueue.isClockedIn()) return; // off the clock: costs nothing
-    await _reportPosition(reason: 'fetch');
+    await reconcilePresenceNow(reason: 'fetch');
+  }
+
+  /// Look at where this phone actually is and correct the clock if it disagrees.
+  ///
+  /// This deliberately runs WHETHER OR NOT we think we are on the clock.
+  ///
+  /// An earlier version returned immediately when clocked out, on the reasoning
+  /// that pings are only needed to reconstruct a departure. That left a missed
+  /// clock-IN with no safety net at all — the exact mirror of the bug this whole
+  /// system was built to fix. Proven on 28 July 2026: a healthy phone sat inside
+  /// the shop zone, clocked out, for twelve minutes, and nothing corrected it.
+  ///
+  /// Arriving unnoticed costs someone their morning. Leaving unnoticed costs
+  /// them their afternoon. Both need catching.
+  static Future<void> reconcilePresenceNow({required String reason}) async {
+    final wifi = await Presence.onShopWifi(_wifiSsid);
+    final clockedIn = await PunchQueue.isClockedIn();
+    try {
+      final loc = await bg.BackgroundGeolocation.getCurrentPosition(
+        samples: 1,
+        timeout: 30,
+        // Off the clock this runs ~96 times a day and usually finds nothing, so
+        // accept a fix up to five minutes old and lower accuracy — it costs the
+        // GPS radio far less. On the clock, insist on something fresh.
+        maximumAge: clockedIn ? 60000 : 300000,
+        desiredAccuracy: clockedIn ? 40 : 100,
+        persist: false,
+      );
+      final metres =
+          _distanceM(loc.coords.latitude, loc.coords.longitude, _lat, _lon);
+      final inside = metres <= _radiusIn || wifi == true;
+
+      await _pingFrom(loc, reason: reason, wifi: wifi);
+
+      // ARRIVED but not clocked in — the geofence never fired. Fix it.
+      if (inside && !clockedIn) {
+        await PunchQueue.setClockedIn(true);
+        await PunchQueue.add(
+          direction: 'in',
+          lat: loc.coords.latitude,
+          lon: loc.coords.longitude,
+          accuracy: loc.coords.accuracy,
+          crossedAt: DateTime.now(),
+          insideGeofence: true,
+        );
+      }
+
+      // We deliberately do NOT punch out here. A single stray fix must never
+      // end someone's shift. Departures are handled by the exit geofence, and
+      // failing that by the server reading this ping trail — which places the
+      // clock-out at the last moment it can actually prove presence.
+    } catch (_) {
+      if (wifi != null) {
+        await Presence.ping(
+            insideGeofence: wifi, insideWifi: wifi, reason: '$reason-nofix');
+      }
+    }
   }
 
   /// Safe to call repeatedly and from any isolate.
