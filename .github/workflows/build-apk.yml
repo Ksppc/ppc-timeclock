@@ -295,9 +295,15 @@ jobs:
       #
       # Errors only. Style warnings must never stand between the crew and a
       # working time clock.
+      #
+      # test/ goes too. `flutter create` writes a widget_test.dart that imports
+      # flutter_test and references a MyApp class — neither of which exists in
+      # this project, since we replace the whole scaffold. Nineteen of the
+      # twenty issues in the first run came from that one generated file.
       - name: Analyse
         run: |
           rm -f analysis_options.yaml
+          rm -rf test
           flutter analyze --no-fatal-infos --no-fatal-warnings
 
       # --split-per-abi builds one APK per CPU architecture instead of a single
