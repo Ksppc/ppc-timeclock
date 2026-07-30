@@ -97,22 +97,31 @@ jobs:
           s = re.sub(r'android:label="[^"]*"', 'android:label="Paragon Time Clock"',
                      s, count=1)
 
-          NG = """
-    <!-- native_geofence: the OS delivers fence crossings here and this starts the app. -->
-    <receiver android:name="com.chunkytofustudios.native_geofence.receivers.NativeGeofenceBroadcastReceiver"
-              android:exported="true"/>
-    <!-- native_geofence: Android drops geofences on reboot; this re-registers them. -->
-    <receiver android:name="com.chunkytofustudios.native_geofence.receivers.NativeGeofenceRebootBroadcastReceiver"
-              android:exported="true">
-        <intent-filter>
-            <action android:name="android.intent.action.BOOT_COMPLETED"/>
-        </intent-filter>
-    </receiver>
-    <!-- native_geofence: the callback promotes to this to finish writing the punch. -->
-    <service android:name="com.chunkytofustudios.native_geofence.NativeGeofenceForegroundService"
-             android:permission="android.permission.BIND_JOB_SERVICE"
-             android:exported="true"/>
-"""
+          # Built as a joined list rather than a triple-quoted literal on
+          # purpose: every line inside a YAML "run: |" block must stay indented
+          # past the block's own margin, and a multi-line Python string with
+          # XML at column 4 silently terminates the block. That is exactly how
+          # this file broke on the first push.
+          R = "com.chunkytofustudios.native_geofence.receivers"
+          S = "com.chunkytofustudios.native_geofence"
+          NG = "\n".join([
+            "",
+            "    <!-- native_geofence: the OS delivers fence crossings here, and this starts the app. -->",
+            f'    <receiver android:name="{R}.NativeGeofenceBroadcastReceiver"',
+            '              android:exported="true"/>',
+            "    <!-- native_geofence: Android drops geofences on reboot; this re-registers them. -->",
+            f'    <receiver android:name="{R}.NativeGeofenceRebootBroadcastReceiver"',
+            '              android:exported="true">',
+            "        <intent-filter>",
+            '            <action android:name="android.intent.action.BOOT_COMPLETED"/>',
+            "        </intent-filter>",
+            "    </receiver>",
+            "    <!-- native_geofence: the callback promotes to this to finish writing the punch. -->",
+            f'    <service android:name="{S}.NativeGeofenceForegroundService"',
+            '             android:permission="android.permission.BIND_JOB_SERVICE"',
+            '             android:exported="true"/>',
+            "",
+          ])
           if "NativeGeofenceBroadcastReceiver" not in s:
             s = s.replace("</application>", NG + "    </application>", 1)
 
@@ -277,8 +286,19 @@ jobs:
       # Static analysis before we spend ten minutes on a build. Catches the
       # class of error that cost builds #30-32 — a name collision between our
       # classes and a package's exports — in about fifteen seconds.
+      #
+      # The generated analysis_options.yaml is deleted first. `flutter create`
+      # writes one that pulls in flutter_lints, but our pubspec.yaml overwrites
+      # the generated one and does not list flutter_lints, so the include would
+      # fail to resolve and the step would fail for a reason that has nothing
+      # to do with our code.
+      #
+      # Errors only. Style warnings must never stand between the crew and a
+      # working time clock.
       - name: Analyse
-        run: flutter analyze --no-fatal-infos
+        run: |
+          rm -f analysis_options.yaml
+          flutter analyze --no-fatal-infos --no-fatal-warnings
 
       # --split-per-abi builds one APK per CPU architecture instead of a single
       # fat one carrying all of them. The old combined debug APK was 161 MB,
@@ -292,19 +312,33 @@ jobs:
         run: |
           set -e
           APK=build/app/outputs/flutter-apk/app-arm64-v8a-debug.apk
-          AAPT=$(ls $ANDROID_HOME/build-tools/*/aapt2 | tail -1)
-          "$AAPT" dump xmltree --file AndroidManifest.xml "$APK" > /tmp/manifest.txt
+          # aapt2 gives a readable tree. If it isn't on the runner, fall back to
+          # pulling the strings straight out of the binary manifest — component
+          # names survive as plain text in the string pool either way. The point
+          # is to never skip this check just because a tool moved.
+          AAPT=$(ls $ANDROID_HOME/build-tools/*/aapt2 2>/dev/null | tail -1 || true)
+          if [ -n "$AAPT" ]; then
+            "$AAPT" dump xmltree --file AndroidManifest.xml "$APK" > /tmp/manifest.txt
+          else
+            echo "aapt2 not found, reading the binary manifest directly"
+            unzip -p "$APK" AndroidManifest.xml | strings > /tmp/manifest.txt
+          fi
+          FAILED=0
           for NAME in NativeGeofenceBroadcastReceiver \
                       NativeGeofenceRebootBroadcastReceiver \
                       NativeGeofenceForegroundService \
-                      ACCESS_BACKGROUND_LOCATION; do
+                      ACCESS_BACKGROUND_LOCATION \
+                      RECEIVE_BOOT_COMPLETED; do
             if grep -q "$NAME" /tmp/manifest.txt; then
               echo "OK   $NAME"
             else
-              echo "FAIL $NAME missing from the built APK"
-              exit 1
+              echo "FAIL $NAME is missing from the built APK"
+              FAILED=1
             fi
           done
+          # Report every failure, then stop. Fixing one and rebuilding ten
+          # minutes later only to hit the next one is how evenings disappear.
+          exit $FAILED
 
       # Name the outputs for humans. arm64 is every Android phone made since
       # roughly 2017 — that is the one crew install. v7a is kept only as a
