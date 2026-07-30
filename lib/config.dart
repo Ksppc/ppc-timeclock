@@ -21,47 +21,37 @@ class Config {
   /// Enter this radius -> clock in.
   static const double clockInRadiusM = 100;
 
-  /// Leave THIS radius -> clock out. Deliberately much larger than the clock-in
-  /// radius. Two reasons:
+  /// Leave THIS radius -> clock out. Deliberately larger than the clock-in
+  /// radius: the band between the two is what stops GPS jitter at the boundary
+  /// punching someone in and out all day.
   ///
-  ///   1. The band between the two stops GPS jitter at the boundary punching
-  ///      you out and back in all day.
-  ///   2. Android geofence reliability improves sharply with radius. At 125 m,
-  ///      against a phone reporting 15-20 m accuracy, exits were simply not
-  ///      firing — on 27 and 28 July neither day produced a GPS clock-out.
-  ///
-  /// Widened from 125 m to 200 m on 28 July. The cost is a few seconds of paid
-  /// time while driving off the property; the benefit is the exit event
-  /// actually happening.
+  /// Android's own guidance is to use a radius of at least 100 m, and to expect
+  /// larger radii to be more reliable. 200 m costs a few seconds of paid time
+  /// while driving off the property and buys a materially more dependable exit.
   static const double clockOutRadiusM = 200;
 
   /// Shop Wi-Fi network. A phone joined to this SSID counts as on site even
   /// when GPS is useless indoors. Empty string = GPS only.
   static const String shopWifiSsid = 'PPC-SHOP';
 
-  /// Legacy heartbeat interval, in seconds.
-  ///
-  /// KEPT ONLY AS A BONUS. Do not rely on it: on Android `heartbeatInterval`
-  /// does not fire while the device is stationary, which is exactly the case
-  /// this system needs covered — a phone sitting in a shop all afternoon. It
-  /// produced zero pings across a ten-hour shift on 28 July 2026.
-  ///
-  /// The guaranteed periodic check is `background_fetch` (see
-  /// Geofence.initPeriodic), which runs through Doze, app termination and
-  /// reboot. If it fires as well, that is a free extra sample.
-  static const int heartbeatSeconds = 900; // 15 min
-
-  /// How far from the shop the plugin keeps the geofence actively monitored.
-  /// The old value of 400 m was the single biggest cause of missed clock-outs:
-  /// it left only a few hundred metres of travel in which to detect the
-  /// crossing, which a moving vehicle covers faster than Android delivers a
-  /// geofence event.
-  static const double geofenceProximityRadiusM = 2000;
-
-  static const String geofenceIdIn  = 'ppc-shop-in';
-  static const String geofenceIdOut = 'ppc-shop-out';
-
-  /// Identifier used by builds 1-7. Removed at startup so an upgraded phone
-  /// doesn't keep firing the old single geofence alongside the new pair.
-  static const String legacyGeofenceId = 'ppc-shop';
+  // ---------------------------------------------------------------------------
+  //  REMOVED ON 29 JULY 2026, and worth recording why.
+  //
+  //  `geofenceProximityRadiusM` used to live here, set to 2000 m after being
+  //  tuned up from 400. It was the tell that the whole design was wrong, and it
+  //  went unquestioned for three days.
+  //
+  //  A geofence registered with the operating system needs no proximity radius:
+  //  the OS watches the boundary itself and starts the app when it is crossed.
+  //  That setting only existed because the old library ran its own tracking
+  //  engine inside this app's process, and had to decide when to bother
+  //  watching. The right response was to ask why the setting existed at all,
+  //  not to keep raising the number.
+  //
+  //  `heartbeatSeconds` is gone for a related reason: it never fired on Android
+  //  while the phone was stationary, which is precisely the case that mattered.
+  //
+  //  Fence identifiers now live next to the code that registers them, in
+  //  geofence.dart (kFenceIn / kFenceOut).
+  // ---------------------------------------------------------------------------
 }

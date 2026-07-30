@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_background_geolocation/flutter_background_geolocation.dart'
-    as bg;
 import 'package:background_fetch/background_fetch.dart' as bf;
+import 'package:geolocator/geolocator.dart' as geo;
 import 'package:permission_handler/permission_handler.dart' as ph;
 // supabase_flutter re-exports a `Presence` class from realtime_client, which
 // collides with our own Presence reporter. We never use the realtime one.
@@ -20,11 +19,14 @@ const _pamber = Color(0xFFB57200);
 
 void main() {
   runApp(const PpcApp());
-  // Geofence crossings while the app is dead.
-  bg.BackgroundGeolocation.registerHeadlessTask(Geofence.headlessTask);
-  // The periodic position check while the app is dead. This is the layer that
-  // guarantees a departure is noticed even when no geofence event ever fires.
-  bf.BackgroundFetch.registerHeadlessTask(Geofence.fetchHeadlessTask);
+  // The periodic backstop while the app is dead.
+  //
+  // Note what is NOT registered here any more: a headless task for geofence
+  // crossings. Those no longer arrive through this app at all — Android
+  // delivers them to a broadcast receiver declared in the manifest, which
+  // starts the app and calls shopFenceTriggered. The callback is wired up when
+  // the fence is created, not at launch.
+  bf.BackgroundFetch.registerHeadlessTask(shopFetchHeadless);
 }
 
 class PpcApp extends StatelessWidget {
@@ -118,7 +120,15 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _startTracking() async {
     setState(() => _phase = _Phase.active);
-    await Geofence.init();
+
+    // Permissions must be granted BEFORE the fences are handed to the OS —
+    // registering without background location throws, and previously that threw
+    // silently and left the phone with no fences at all.
+    await _askPermissions();
+    try {
+      await ShopFence.init();
+    } catch (_) {}
+
     Connectivity().onConnectivityChanged.listen((_) {
       PunchQueue.flush();
       Presence.flush();
@@ -126,60 +136,72 @@ class _HomeScreenState extends State<HomeScreen> {
     await _runChecks();
   }
 
-  // -------------------------------------------------------------------------
-  //  Setup checklist. Everything the phone needs in order for this to work,
-  //  each with a button that fixes it. Previously all of this was manual
-  //  Android-settings work that only ever got done on the test phone.
-  // -------------------------------------------------------------------------
-  Future<void> _runChecks() async {
-    setState(() => _checking = true);
-
-    // Opening the app, or pulling to refresh, now also asks "where am I really?"
-    // and corrects the clock if it disagrees. Previously this screen only re-read
-    // permissions, so a phone sitting at the shop while wrongly clocked out had
-    // no way to notice — force-closing the app was the only remedy.
-    // Ask for notification permission on the very first run, rather than
-    // waiting for someone to notice a red row. Android only shows this prompt
-    // once, so asking early matters.
+  /// Ask for everything, in the order Android requires.
+  ///
+  /// "While using the app" is requested first; Android will not even show the
+  /// "Allow all the time" option until the basic permission is held. Asking for
+  /// them the other way round silently fails, which is a fine way to ship a
+  /// clock that never runs.
+  Future<void> _askPermissions() async {
     try {
+      if (!await ph.Permission.location.isGranted) {
+        await ph.Permission.location.request();
+      }
+      if (!await ph.Permission.locationAlways.isGranted) {
+        await ph.Permission.locationAlways.request();
+      }
+      // Android 13+ denies notifications by default, and the foreground service
+      // that the geofence callback promotes to needs one to display.
       if (!await ph.Permission.notification.isGranted) {
         await ph.Permission.notification.request();
       }
     } catch (_) {}
+  }
 
+  // -------------------------------------------------------------------------
+  //  Setup checklist. Everything the phone needs in order for this to work,
+  //  each with a button that fixes it.
+  // -------------------------------------------------------------------------
+  Future<void> _runChecks() async {
+    setState(() => _checking = true);
+
+    // Opening the app, or pulling to refresh, also asks "where am I really?"
+    // and corrects the clock if it disagrees.
     try {
-      await Geofence.reconcilePresenceNow(reason: 'app-opened');
+      await ShopFence.recheck(reason: 'app-opened');
     } catch (_) {}
 
     final out = <_Check>[];
 
     // 1. Location permission — must be "Allow all the time".
-    int status = bg.ProviderChangeEvent.AUTHORIZATION_STATUS_NOT_DETERMINED;
-    bool servicesOn = true;
+    bool always = false;
     try {
-      final state = await bg.BackgroundGeolocation.providerState;
-      status = state.status;
-      servicesOn = state.enabled;
+      always = await ph.Permission.locationAlways.isGranted;
     } catch (_) {}
-    final alwaysOn =
-        status == bg.ProviderChangeEvent.AUTHORIZATION_STATUS_ALWAYS;
     out.add(_Check(
       'Location: allow all the time',
-      alwaysOn
+      always
           ? 'Granted.'
           : 'The clock cannot see the shop unless location is set to "Allow all '
               'the time". "While using the app" is not enough — the app is '
               'never open.',
-      ok: alwaysOn,
-      fixLabel: alwaysOn ? null : 'Grant',
-      fix: alwaysOn
+      ok: always,
+      fixLabel: always ? null : 'Grant',
+      fix: always
           ? null
           : () async {
-              await bg.BackgroundGeolocation.requestPermission();
+              await ph.Permission.location.request();
+              final r = await ph.Permission.locationAlways.request();
+              if (r.isPermanentlyDenied) await ph.openAppSettings();
+              await ShopFence.registerFences();
             },
     ));
 
     // 2. Location services switched on at all.
+    bool servicesOn = true;
+    try {
+      servicesOn = await geo.Geolocator.isLocationServiceEnabled();
+    } catch (_) {}
     out.add(_Check(
       'Location services on',
       servicesOn ? 'On.' : 'Location is switched off on this phone.',
@@ -188,20 +210,58 @@ class _HomeScreenState extends State<HomeScreen> {
       fix: servicesOn
           ? null
           : () async {
-              await bg.BackgroundGeolocation.requestPermission();
+              await geo.Geolocator.openLocationSettings();
             },
     ));
 
-    // 3. Notifications. Not cosmetic.
+    // 3. THE FENCES THEMSELVES.
     //
-    //    The clock runs as a foreground service, and Android requires a
-    //    foreground service to display a persistent notification. Since
-    //    Android 13 that notification needs permission the user must grant —
-    //    and this app never asked for it, so it was denied from the moment it
-    //    was installed. The result: no visible notification, and no way to
-    //    confirm the service was alive. On 28 July the app restarted three
-    //    times in 45 minutes while battery settings were confirmed
-    //    Unrestricted, and this is the most likely reason.
+    //    This is the check that matters under the new design, and it replaces
+    //    the old "Clock running" row. That row asked whether this app was
+    //    running — which is now the wrong question, because the app is
+    //    SUPPOSED to be closed almost all the time. The right question is
+    //    whether Android is still holding our two fences on our behalf.
+    //
+    //    It is also the only row here that reads a fact back out of the
+    //    operating system rather than reporting a setting we asked for.
+    List<String>? fences;
+    try {
+      fences = await ShopFence.registeredFenceIds();
+    } catch (_) {}
+    final armed =
+        fences != null && fences.contains(kFenceIn) && fences.contains(kFenceOut);
+    out.add(_Check(
+      'Shop fence armed',
+      armed
+          ? 'Android is watching the shop boundary for this phone. It will '
+              'start the app and record your punch even if the app is closed '
+              'or the phone has been restarted.'
+          : fences == null
+              ? 'Could not ask Android whether the shop boundary is being '
+                  'watched. Tap Re-arm.'
+              : fences.isEmpty
+                  ? 'Android is not watching the shop boundary. Your hours '
+                      'will not record. This almost always means the location '
+                      'permission above needs fixing first.'
+                  : 'Only part of the shop boundary is registered '
+                      '(${fences.join(", ")}). Tap Re-arm.',
+      ok: armed,
+      fixLabel: armed ? null : 'Re-arm',
+      fix: armed
+          ? null
+          : () async {
+              await ShopFence.init();
+            },
+    ));
+
+    // 4. Notifications.
+    //
+    //    Still needed: when a fence fires, the callback promotes itself to a
+    //    foreground service to make the network call that writes the punch, and
+    //    Android requires a foreground service to be able to show a
+    //    notification. Less critical than it was — there is no longer a
+    //    permanent service to keep alive — but a blocked notification can still
+    //    cut the punch write short.
     bool notifOk = true;
     try {
       notifOk = await ph.Permission.notification.isGranted;
@@ -209,77 +269,69 @@ class _HomeScreenState extends State<HomeScreen> {
     out.add(_Check(
       'Allow notifications',
       notifOk
-          ? 'Granted. You should see a permanent "Paragon Time Clock" '
-              'notification — that is the clock running. Do not turn it off.'
-          : 'Blocked. The clock runs as a background service, and Android only '
-              'lets it keep running if it can show a permanent notification. '
-              'Without this it can be shut down without warning and your hours '
-              'stop recording.',
+          ? 'Granted.'
+          : 'Blocked. When you arrive or leave, the app wakes for a few seconds '
+              'to record it, and Android needs this permission to let it '
+              'finish. Without it a punch can be cut off part-way.',
       ok: notifOk,
       fixLabel: notifOk ? null : 'Allow',
       fix: notifOk
           ? null
           : () async {
-              await ph.Permission.notification.request();
+              final r = await ph.Permission.notification.request();
+              if (r.isPermanentlyDenied) await ph.openAppSettings();
             },
     ));
 
-    // 4. Battery optimisation — the big one. Android will otherwise put the
-    //    app to sleep mid-shift and the clock-out never happens.
+    // 5. Battery optimisation.
+    //
+    //    Downgraded from blocker to advisory, and that is a real change worth
+    //    being clear about. Under the old design this was the single biggest
+    //    cause of lost hours, because Doze would sleep the app and the app WAS
+    //    the clock. Now the OS holds the fence and delivering a geofence event
+    //    is something Android does regardless of Doze. It still helps — the few
+    //    seconds of work after the wake-up are smoother — but it is no longer
+    //    the difference between working and not.
     bool ignoring = false;
     try {
-      ignoring = await bg.DeviceSettings.isIgnoringBatteryOptimizations;
+      ignoring = await ph.Permission.ignoreBatteryOptimizations.isGranted;
     } catch (_) {}
     out.add(_Check(
       'Battery: unrestricted',
       ignoring
           ? 'This app is exempt from battery optimisation.'
-          : 'Android is allowed to sleep this app. This is the most common '
-              'reason a clock-out goes missing.',
-      ok: ignoring,
+          : 'Recommended, not required. The shop fence is watched by Android '
+              'itself now, so this no longer stops your hours recording — but '
+              'it gives the app the few seconds it needs to save a punch '
+              'cleanly.',
+      ok: true,
+      warn: !ignoring,
       fixLabel: ignoring ? null : 'Fix now',
       fix: ignoring
           ? null
           : () async {
-              final req =
-                  await bg.DeviceSettings.showIgnoreBatteryOptimizations();
-              await bg.DeviceSettings.show(req);
+              await ph.Permission.ignoreBatteryOptimizations.request();
             },
     ));
 
-    // 4. Manufacturer power manager (Samsung / Xiaomi / Huawei / OnePlus).
-    //    These kill background apps on their own schedule regardless of what
-    //    Android itself permits.
+    // 6. Manufacturer power manager (Samsung / Xiaomi / Huawei / OnePlus).
     out.add(_Check(
       'Phone maker\'s battery saver',
       'Samsung, Xiaomi, Huawei and OnePlus run their own app-killer on top of '
-          'Android. If your phone is one of those, add Paragon Time Clock to '
-          'its allowed list.',
+          'Android. Adding Paragon Time Clock to its allowed list is worth '
+          'doing, though the shop fence now survives without it.',
       ok: true,
       warn: true,
       fixLabel: 'Open',
       fix: () async {
-        try {
-          final req = await bg.DeviceSettings.showPowerManager();
-          await bg.DeviceSettings.show(req);
-        } catch (_) {}
+        await ph.openAppSettings();
       },
     ));
 
-    // 5. Shop Wi-Fi — the backup presence signal.
-    //
-    // NEVER a blocker. Wi-Fi is an extra signal for indoors, not a requirement:
-    // the clock works on GPS alone. Being off the shop network is the normal,
-    // correct state everywhere except the shop itself, so flagging it red made
-    // the app cry wolf every evening — and a checklist that shows a false alarm
-    // every night is a checklist people stop reading.
-    final ssid = Geofence.wifiSsid;
+    // 7. Shop Wi-Fi — the backup presence signal. NEVER a blocker.
+    final ssid = ShopFence.wifiSsid;
     final onWifi = await Presence.onShopWifi(ssid);
     final nowOn = await Presence.currentSsid();
-
-    // Always say what network we are actually on. Standing in the shop, this
-    // line IS the answer to "what is the shop network called" — read it off the
-    // phone and type it into the dashboard once.
     final youAreOn = nowOn == null
         ? 'This phone is not on Wi-Fi right now.'
         : 'This phone is on: $nowOn';
@@ -302,24 +354,6 @@ class _HomeScreenState extends State<HomeScreen> {
                       'so the clock runs on GPS alone. Nothing to do.',
       ok: true,
       warn: onWifi != true,
-    ));
-
-    // 6. Tracking actually running.
-    bool enabled = false;
-    try {
-      final s = await bg.BackgroundGeolocation.state;
-      enabled = s.enabled;
-    } catch (_) {}
-    out.add(_Check(
-      'Clock running',
-      enabled ? 'Tracking is active.' : 'Tracking is not running.',
-      ok: enabled,
-      fixLabel: enabled ? null : 'Start',
-      fix: enabled
-          ? null
-          : () async {
-              await bg.BackgroundGeolocation.start();
-            },
     ));
 
     final pp = await PunchQueue.pendingCount();
@@ -612,7 +646,7 @@ class _HomeScreenState extends State<HomeScreen> {
           const Text(
             'Leave the app installed and leave location on "Allow all the '
             'time". It clocks you in and out on its own — there is nothing to '
-            'tap each day.',
+            'tap each day, and it is fine to close it.',
             textAlign: TextAlign.center,
             style: TextStyle(fontSize: 12, color: Colors.grey),
           ),

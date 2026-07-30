@@ -1,207 +1,136 @@
 import 'dart:math';
-import 'package:flutter_background_geolocation/flutter_background_geolocation.dart'
-    as bg;
 import 'package:background_fetch/background_fetch.dart' as bf;
-import 'package:shared_preferences/shared_preferences.dart';
-// supabase_flutter re-exports a `Presence` class from realtime_client, which
-// collides with our own Presence reporter. We never use the realtime one.
+import 'package:geolocator/geolocator.dart' as geo;
+// The native package also exports a class called `Geofence`, so it is always
+// prefixed. Learned from the `Presence` collision that cost three builds.
+import 'package:native_geofence/native_geofence.dart' as ng;
 import 'package:supabase_flutter/supabase_flutter.dart' hide Presence;
 import 'config.dart';
 import 'punch_queue.dart';
 import 'presence.dart';
 
-/// Background presence detection.
-///
-/// TWO layers, on purpose:
-///
-///  1. GEOFENCE events give an instant, accurate punch when they fire. This is
-///     the happy path and it is what produces a clean record.
-///
-///  2. HEARTBEAT pings, sent only while clocked in, let the server reconstruct
-///     a clock-out when the geofence event never arrives — which on Android it
-///     regularly does not. See presence.dart and
-///     backend/presence-reconciliation.sql.
-///
-/// Layer 1 alone was the original design. It lost a full shift the first time
-/// an exit event went missing, and had no way to notice or recover.
-class Geofence {
-  // Active shop zone. Compiled-in defaults, refreshed from the database at
-  // startup so the dashboard can move the zone without an APK rebuild.
+// =============================================================================
+//  THE CLOCK — rebuilt on the operating system's own geofencing.
+//
+//  WHAT CHANGED AND WHY
+//  --------------------
+//  The previous three versions ran a tracking engine INSIDE this app and needed
+//  the app to stay alive to notice a boundary crossing. It didn't. On 29 July
+//  the app reported enabled=true at 07:22, the process then died, and eleven
+//  hours passed with no exit, no heartbeat and no periodic check. Every fix
+//  attempted — a wider radius, heartbeatInterval, background_fetch, a foreground
+//  service, battery exemptions — was an attempt to keep a process alive that
+//  Android had already decided to kill.
+//
+//  Android's Geofencing API does not work that way. You hand the fence to the
+//  OS, the OS watches it with its own machinery, and when it is crossed the OS
+//  STARTS THIS APP to deliver the event. From Google's own documentation:
+//
+//    "The Geofencing API delivers the events to an IntentService in your app,
+//     which removes the need to have a service running in the background for
+//     geofencing purposes."
+//
+//  The app being dead is the expected state, not a failure. Same on iOS, where
+//  CLLocationManager region monitoring relaunches a terminated app.
+//
+//  The tell was in our own config all along: `geofenceProximityRadius`. A fence
+//  watched by the OS needs no proximity radius. That setting only existed
+//  because the old library polled from inside this process. It was tuned from
+//  400 to 2000 instead of being questioned.
+// =============================================================================
+
+/// Fence identifiers. Two fences, not one, so the clock-in radius can be tight
+/// while the clock-out radius is generous — the band between them is what stops
+/// GPS jitter at the boundary punching someone in and out all day.
+const String kFenceIn = 'ppc-shop-in';
+const String kFenceOut = 'ppc-shop-out';
+
+// -----------------------------------------------------------------------------
+//  THE CALLBACK
+//
+//  Top-level, not a static method, and annotated vm:entry-point — the OS looks
+//  this up by handle and calls it in a fresh isolate where nothing is
+//  initialised. Everything it needs must be set up here.
+// -----------------------------------------------------------------------------
+@pragma('vm:entry-point')
+Future<void> shopFenceTriggered(ng.GeofenceCallbackParams params) async {
+  // Writing a punch means a network call. The package's own guidance is to
+  // promote to a foreground service for anything heavier than a notification,
+  // so the OS does not cut us off mid-request.
+  try {
+    await ng.NativeGeofenceBackgroundManager.instance.promoteToForeground();
+  } catch (_) {}
+
+  try {
+    await ShopFence.ensureSupabase();
+
+    final ids = params.geofences.map((g) => g.id).toSet();
+    final entering = params.event == ng.GeofenceEvent.enter &&
+        ids.contains(kFenceIn);
+    final leaving = params.event == ng.GeofenceEvent.exit &&
+        ids.contains(kFenceOut);
+
+    final lat = params.location?.latitude;
+    final lon = params.location?.longitude;
+
+    if (entering) {
+      await ShopFence.recordArrival(lat: lat, lon: lon, why: 'fence-enter');
+    } else if (leaving) {
+      await ShopFence.recordDeparture(lat: lat, lon: lon, why: 'fence-exit');
+    } else {
+      // A trigger we don't act on — the wrong fence for this direction. Record
+      // it anyway so the trail explains itself later.
+      await Presence.ping(
+        insideGeofence: params.event == ng.GeofenceEvent.enter,
+        lat: lat,
+        lon: lon,
+        reason: 'fence-${params.event.name}-ignored',
+        appState: 'ids=${ids.join(",")}',
+      );
+    }
+  } catch (_) {
+    // Never let the callback throw — the OS may not deliver again.
+  } finally {
+    try {
+      await ng.NativeGeofenceBackgroundManager.instance.demoteToBackground();
+    } catch (_) {}
+  }
+}
+
+/// Periodic backstop. Fires roughly every 15 minutes if Android permits, and
+/// exists only to catch the case where a fence event was genuinely lost. The
+/// fences are the primary mechanism now; this is belt to their braces.
+@pragma('vm:entry-point')
+Future<void> shopFetchHeadless(bf.HeadlessEvent event) async {
+  if (event.timeout) {
+    await bf.BackgroundFetch.finish(event.taskId);
+    return;
+  }
+  try {
+    await ShopFence.ensureSupabase();
+    await ShopFence.loadZone();
+    await ShopFence.recheck(reason: 'fetch');
+  } catch (_) {
+  } finally {
+    await bf.BackgroundFetch.finish(event.taskId);
+  }
+}
+
+class ShopFence {
   static double _lat = Config.zoneLat;
   static double _lon = Config.zoneLon;
   static double _radiusIn = Config.clockInRadiusM;
   static double _radiusOut = Config.clockOutRadiusM;
   static String? _wifiSsid = Config.shopWifiSsid;
-  static int _heartbeatSeconds = Config.heartbeatSeconds;
 
-  static const _lastPingKey = 'last_motion_ping_ms';
+  static String? get wifiSsid => _wifiSsid;
+  static double get radiusIn => _radiusIn;
+  static double get radiusOut => _radiusOut;
 
-  // -------------------------------------------------------------------------
-  //  Headless entry point — runs when the app process is NOT alive.
-  //
-  //  This isolate does not run main(), so nothing is initialised for us: the
-  //  Supabase client and the zone both have to be set up here or every punch
-  //  taken while the app is closed sits in the local queue until someone
-  //  happens to open the app. Since nobody ever opens this app, that meant
-  //  punches could lag for days.
-  // -------------------------------------------------------------------------
-  @pragma('vm:entry-point')
-  static Future<void> headlessTask(bg.HeadlessEvent event) async {
-    await _ensureSupabase();
-    await _loadZone();
-
-    switch (event.name) {
-      case bg.Event.GEOFENCE:
-        await _record(event.event as bg.GeofenceEvent);
-        break;
-      case bg.Event.HEARTBEAT:
-        await _heartbeat();
-        break;
-      case bg.Event.TERMINATE:
-      case bg.Event.BOOT:
-        // Process restarting: say where we are so a crossing missed while dead
-        // is still reconcilable server-side.
-        await _reportPosition(reason: 'startup');
-        break;
-    }
-  }
-
-  // -------------------------------------------------------------------------
-  //  THE GUARANTEED CLOCK.
-  //
-  //  `heartbeatInterval` does not fire on Android when the device is stationary
-  //  — which is precisely when a phone is sitting in a shop all afternoon. On
-  //  28 July 2026 it produced ZERO pings across a ten-hour shift, and a missed
-  //  geofence exit had to be reconstructed from a single incidental motion ping.
-  //
-  //  `background_fetch` is Android's supported mechanism for work that must
-  //  actually happen: it runs through Doze, through app termination, and after
-  //  reboot. This is the floor under everything else.
-  // -------------------------------------------------------------------------
-
-  /// Headless entry point for the periodic task — runs with the app terminated.
-  @pragma('vm:entry-point')
-  static Future<void> fetchHeadlessTask(bf.HeadlessEvent event) async {
-    if (event.timeout) {
-      await bf.BackgroundFetch.finish(event.taskId);
-      return;
-    }
+  /// Safe from any isolate; the callback runs where nothing is initialised.
+  static Future<void> ensureSupabase() async {
     try {
-      await _ensureSupabase();
-      await _loadZone();
-      await _periodicCheck();
-    } catch (_) {
-    } finally {
-      // Must always finish, or Android throttles us for overrunning.
-      await bf.BackgroundFetch.finish(event.taskId);
-    }
-  }
-
-  /// Register the periodic task. Call once from main().
-  static Future<void> initPeriodic() async {
-    try {
-      await bf.BackgroundFetch.configure(
-        bf.BackgroundFetchConfig(
-          minimumFetchInterval: 15, // Android's floor; asking for less is ignored
-          stopOnTerminate: false,
-          startOnBoot: true,
-          enableHeadless: true,
-          requiresBatteryNotLow: false,
-          requiresCharging: false,
-          requiresStorageNotLow: false,
-          requiresDeviceIdle: false,
-          requiredNetworkType: bf.NetworkType.NONE,
-          // JobScheduler throttles by battery and usage patterns. Payroll is not
-          // a good place for "the OS decided to skip a few". AlarmManager costs
-          // a little more battery and actually runs.
-          forceAlarmManager: true,
-        ),
-        (String taskId) async {
-          try {
-            await _periodicCheck();
-          } catch (_) {}
-          await bf.BackgroundFetch.finish(taskId);
-        },
-        (String taskId) async {
-          await bf.BackgroundFetch.finish(taskId);
-        },
-      );
-      await bf.BackgroundFetch.start();
-    } catch (_) {
-      // Never let a scheduling failure take the app down — the geofence and
-      // Wi-Fi layers still work without it.
-    }
-  }
-
-  /// What the periodic task actually does: flush anything stuck, then make the
-  /// clock agree with reality.
-  static Future<void> _periodicCheck() async {
-    await PunchQueue.flush();
-    await Presence.flush();
-    await reconcilePresenceNow(reason: 'fetch');
-  }
-
-  /// Look at where this phone actually is and correct the clock if it disagrees.
-  ///
-  /// This deliberately runs WHETHER OR NOT we think we are on the clock.
-  ///
-  /// An earlier version returned immediately when clocked out, on the reasoning
-  /// that pings are only needed to reconstruct a departure. That left a missed
-  /// clock-IN with no safety net at all — the exact mirror of the bug this whole
-  /// system was built to fix. Proven on 28 July 2026: a healthy phone sat inside
-  /// the shop zone, clocked out, for twelve minutes, and nothing corrected it.
-  ///
-  /// Arriving unnoticed costs someone their morning. Leaving unnoticed costs
-  /// them their afternoon. Both need catching.
-  static Future<void> reconcilePresenceNow({required String reason}) async {
-    final wifi = await Presence.onShopWifi(_wifiSsid);
-    final clockedIn = await PunchQueue.isClockedIn();
-    try {
-      final loc = await bg.BackgroundGeolocation.getCurrentPosition(
-        samples: 1,
-        timeout: 30,
-        // Off the clock this runs ~96 times a day and usually finds nothing, so
-        // accept a fix up to five minutes old and lower accuracy — it costs the
-        // GPS radio far less. On the clock, insist on something fresh.
-        maximumAge: clockedIn ? 60000 : 300000,
-        desiredAccuracy: clockedIn ? 40 : 100,
-        persist: false,
-      );
-      final metres =
-          _distanceM(loc.coords.latitude, loc.coords.longitude, _lat, _lon);
-      final inside = metres <= _radiusIn || wifi == true;
-
-      await _pingFrom(loc, reason: reason, wifi: wifi);
-
-      // ARRIVED but not clocked in — the geofence never fired. Fix it.
-      if (inside && !clockedIn) {
-        await PunchQueue.setClockedIn(true);
-        await PunchQueue.add(
-          direction: 'in',
-          lat: loc.coords.latitude,
-          lon: loc.coords.longitude,
-          accuracy: loc.coords.accuracy,
-          crossedAt: DateTime.now(),
-          insideGeofence: true,
-        );
-      }
-
-      // We deliberately do NOT punch out here. A single stray fix must never
-      // end someone's shift. Departures are handled by the exit geofence, and
-      // failing that by the server reading this ping trail — which places the
-      // clock-out at the last moment it can actually prove presence.
-    } catch (_) {
-      if (wifi != null) {
-        await Presence.ping(
-            insideGeofence: wifi, insideWifi: wifi, reason: '$reason-nofix');
-      }
-    }
-  }
-
-  /// Safe to call repeatedly and from any isolate.
-  static Future<void> _ensureSupabase() async {
-    try {
-      Supabase.instance.client; // throws if not yet initialised
+      Supabase.instance.client;
     } catch (_) {
       try {
         await Supabase.initialize(
@@ -210,122 +139,9 @@ class Geofence {
     }
   }
 
-  static Future<void> init() async {
-    await _loadZone();
-
-    bg.BackgroundGeolocation.onGeofence(_record);
-    bg.BackgroundGeolocation.onHeartbeat((_) => _heartbeat());
-
-    // While moving, the plugin reports locations anyway — piggyback a ping so
-    // the drive away from the shop is densely covered without extra GPS use.
-    bg.BackgroundGeolocation.onLocation((bg.Location l) async {
-      if (!await PunchQueue.isClockedIn()) return;
-      final prefs = await SharedPreferences.getInstance();
-      final last = prefs.getInt(_lastPingKey) ?? 0;
-      final now = DateTime.now().millisecondsSinceEpoch;
-      if (now - last < 120000) return; // at most one motion ping every 2 min
-      await prefs.setInt(_lastPingKey, now);
-      await _pingFrom(l, reason: 'motion');
-    });
-
-    // Wi-Fi as a FIRST-CLASS signal, not an afterthought.
-    //
-    // For a fixed shop this is the best presence indicator there is: it changes
-    // the instant you join or leave the network, it works inside a steel
-    // building where GPS cannot, and it costs almost no battery. Joining or
-    // dropping the shop network is a strong statement about where the phone is,
-    // so record a ping the moment connectivity changes rather than waiting for
-    // the next scheduled check.
-    bg.BackgroundGeolocation.onConnectivityChange(
-        (bg.ConnectivityChangeEvent e) async {
-      if (!await PunchQueue.isClockedIn()) return;
-      final wifi = await Presence.onShopWifi(_wifiSsid);
-      if (wifi == null) return; // phone won't say — nothing to record
-      await Presence.ping(
-        insideGeofence: wifi,
-        insideWifi: wifi,
-        reason: wifi ? 'wifi-joined' : 'wifi-left',
-      );
-    });
-
-    // If location services get switched off while someone is on the clock,
-    // that is exactly the silent failure that loses a day. Record it.
-    bg.BackgroundGeolocation.onProviderChange((bg.ProviderChangeEvent e) async {
-      if (!e.enabled && await PunchQueue.isClockedIn()) {
-        await Presence.ping(
-          insideGeofence: true, // last known state; not evidence of leaving
-          insideWifi: await Presence.onShopWifi(_wifiSsid),
-          reason: 'location-off',
-        );
-      }
-    });
-
-    await bg.BackgroundGeolocation.ready(bg.Config(
-      desiredAccuracy: bg.Config.DESIRED_ACCURACY_HIGH,
-      distanceFilter: 20,
-      stopOnTerminate: false,
-      startOnBoot: true,
-      enableHeadless: true,
-      // Keep the geofence actively monitored well beyond the zone. At the old
-      // 400 m a vehicle left the monitored area faster than Android delivers a
-      // geofence event, and the exit was simply never reported.
-      geofenceProximityRadius: Config.geofenceProximityRadiusM.toInt(),
-      geofenceModeHighAccuracy: true,
-      // Heartbeat is what makes a missed exit recoverable.
-      heartbeatInterval: _heartbeatSeconds,
-      preventSuspend: true,
-      // A foreground service is what stops the OEM battery managers from
-      // quietly killing us mid-shift. The plugin supplies its own default
-      // notification; customising the text is cosmetic and is deliberately
-      // left alone here so this build has no unverified API surface in it.
-      foregroundService: true,
-      logLevel: bg.Config.LOG_LEVEL_OFF,
-    ));
-
-    await _registerZones();
-    await bg.BackgroundGeolocation.start();
-    await initPeriodic(); // the guaranteed 15-minute clock
-    await _syncInitialPresence();
-  }
-
-  /// Register the entry and exit geofences as a PAIR.
-  ///
-  /// A single geofence cannot express "clock in at 100 m, clock out at 125 m" —
-  /// it has one radius. That is why the 25 m anti-jitter buffer, which is in
-  /// the spec and in the database schema and on the dashboard, did not
-  /// previously exist in the app at all.
-  static Future<void> _registerZones() async {
-    for (final id in [
-      Config.legacyGeofenceId,
-      Config.geofenceIdIn,
-      Config.geofenceIdOut
-    ]) {
-      try {
-        await bg.BackgroundGeolocation.removeGeofence(id);
-      } catch (_) {}
-    }
-
-    await bg.BackgroundGeolocation.addGeofence(bg.Geofence(
-      identifier: Config.geofenceIdIn,
-      radius: _radiusIn,
-      latitude: _lat,
-      longitude: _lon,
-      notifyOnEntry: true,
-      notifyOnExit: false,
-    ));
-
-    await bg.BackgroundGeolocation.addGeofence(bg.Geofence(
-      identifier: Config.geofenceIdOut,
-      radius: _radiusOut,
-      latitude: _lat,
-      longitude: _lon,
-      notifyOnEntry: false,
-      notifyOnExit: true,
-    ));
-  }
-
-  /// Fetch the live shop zone. Silent fallback to Config on any error.
-  static Future<void> _loadZone() async {
+  /// Live shop zone from the dashboard-editable table. Falls back to the
+  /// compiled-in values, so a network failure never leaves us fenceless.
+  static Future<void> loadZone() async {
     try {
       final rows = await Supabase.instance.client
           .from('zone_config')
@@ -338,13 +154,9 @@ class Geofence {
         _lat = (z['center_lat'] as num).toDouble();
         _lon = (z['center_lon'] as num).toDouble();
         _radiusIn = (z['clock_in_radius_m'] as num).toDouble();
-        // Previously never read — the dashboard field was writing to a column
-        // nothing consumed.
         final ro = z['clock_out_radius_m'];
-        _radiusOut = ro == null
-            ? _radiusIn + 25
-            : (ro as num).toDouble();
-        if (_radiusOut <= _radiusIn) _radiusOut = _radiusIn + 25;
+        _radiusOut = ro == null ? _radiusIn + 100 : (ro as num).toDouble();
+        if (_radiusOut <= _radiusIn) _radiusOut = _radiusIn + 100;
         _wifiSsid = z['wifi_ssid'] as String?;
       }
     } catch (_) {
@@ -352,191 +164,254 @@ class Geofence {
     }
   }
 
-  // -------------------------------------------------------------------------
-  //  Geofence crossings
-  // -------------------------------------------------------------------------
-  static Future<void> _record(bg.GeofenceEvent ev) async {
-    final isEntry = ev.identifier == Config.geofenceIdIn && ev.action == 'ENTER';
-    final isExit = ev.identifier == Config.geofenceIdOut && ev.action == 'EXIT';
-    if (!isEntry && !isExit) return;
+  // ---------------------------------------------------------------------------
+  //  SETUP
+  // ---------------------------------------------------------------------------
+  static Future<void> init() async {
+    await ensureSupabase();
+    await loadZone();
+    await ng.NativeGeofenceManager.instance.initialize();
+    await registerFences();
+    await _initPeriodic();
+  }
 
-    final alreadyOnSite = await PunchQueue.isClockedIn();
-    // Ignore duplicate same-direction crossings.
-    if (isEntry && alreadyOnSite) return;
-    if (isExit && !alreadyOnSite) return;
-
-    // An exit while still joined to the shop Wi-Fi is GPS drift, not a
-    // departure. Don't punch out someone standing inside the building.
-    if (isExit) {
-      final wifi = await Presence.onShopWifi(_wifiSsid);
-      if (wifi == true) {
-        await _pingFrom(ev.location, reason: 'exit-suppressed-wifi');
-        return;
-      }
+  /// Hand both fences to the OS.
+  ///
+  /// `initialTriggers: {enter}` is the elegant part: if the phone is already
+  /// inside the zone when the fence is registered, Android fires ENTER straight
+  /// away. That removes the whole class of "already at the shop when the app
+  /// started, so no crossing ever happened" bug we hit repeatedly.
+  static Future<void> registerFences() async {
+    // Clear stale fences first so a moved zone or changed radius takes effect,
+    // including the identifiers used by earlier builds.
+    for (final id in [kFenceIn, kFenceOut, 'ppc-shop']) {
+      try {
+        await ng.NativeGeofenceManager.instance.removeGeofenceById(id);
+      } catch (_) {}
     }
 
-    await PunchQueue.setClockedIn(isEntry);
-    final loc = ev.location;
-    await PunchQueue.add(
-      direction: isEntry ? 'in' : 'out',
-      lat: loc.coords.latitude,
-      lon: loc.coords.longitude,
-      accuracy: loc.coords.accuracy,
-      crossedAt: DateTime.parse(loc.timestamp),
-      insideGeofence: isEntry,
+    final loc = ng.Location(latitude: _lat, longitude: _lon);
+
+    await ng.NativeGeofenceManager.instance.createGeofence(
+      ng.Geofence(
+        id: kFenceIn,
+        location: loc,
+        radiusMeters: _radiusIn,
+        triggers: {ng.GeofenceEvent.enter},
+        iosSettings: ng.IosGeofenceSettings(initialTrigger: true),
+        androidSettings: ng.AndroidGeofenceSettings(
+          initialTriggers: {ng.GeofenceEvent.enter},
+          // Payroll wants promptness over battery. This asks Android to notice
+          // sooner rather than batching for power saving.
+          notificationResponsiveness: const Duration(minutes: 1),
+        ),
+      ),
+      shopFenceTriggered,
     );
-    await _pingFrom(loc, reason: isEntry ? 'clock-in' : 'clock-out');
+
+    await ng.NativeGeofenceManager.instance.createGeofence(
+      ng.Geofence(
+        id: kFenceOut,
+        location: loc,
+        radiusMeters: _radiusOut,
+        triggers: {ng.GeofenceEvent.exit},
+        iosSettings: ng.IosGeofenceSettings(initialTrigger: false),
+        androidSettings: ng.AndroidGeofenceSettings(
+          initialTriggers: const {},
+          notificationResponsiveness: const Duration(minutes: 1),
+        ),
+      ),
+      shopFenceTriggered,
+    );
   }
 
-  // -------------------------------------------------------------------------
-  //  Heartbeat — only while on the clock.
-  // -------------------------------------------------------------------------
-  static Future<void> _heartbeat() async {
-    if (!await PunchQueue.isClockedIn()) return; // off the clock: cost nothing
+  /// Which fences the OS says it is currently watching.
+  ///
+  /// This is the health question that actually matters now. "Is the app
+  /// running?" is no longer meaningful — the app is *supposed* to be dead most
+  /// of the time. What matters is whether the OS still holds our fences.
+  ///
+  /// Returns NULL when we could not ask — which is not the same as an empty
+  /// list, and the difference matters. An empty list means Android told us it
+  /// is watching nothing, and someone's hours are about to go missing. Null
+  /// means the question failed, most likely because we are in a background
+  /// isolate where the plugin was never initialised. Collapsing the two would
+  /// make the app report a false alarm every time the periodic check ran.
+  static Future<List<String>?> registeredFenceIds() async {
+    try {
+      return await ng.NativeGeofenceManager.instance.getRegisteredGeofenceIds();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<void> _initPeriodic() async {
+    try {
+      await bf.BackgroundFetch.configure(
+        bf.BackgroundFetchConfig(
+          minimumFetchInterval: 15,
+          stopOnTerminate: false,
+          startOnBoot: true,
+          enableHeadless: true,
+          requiresBatteryNotLow: false,
+          requiresCharging: false,
+          requiresStorageNotLow: false,
+          requiresDeviceIdle: false,
+          requiredNetworkType: bf.NetworkType.NONE,
+          forceAlarmManager: true,
+        ),
+        (String taskId) async {
+          try {
+            await recheck(reason: 'fetch');
+          } catch (_) {}
+          await bf.BackgroundFetch.finish(taskId);
+        },
+        (String taskId) async => bf.BackgroundFetch.finish(taskId),
+      );
+      await bf.BackgroundFetch.start();
+    } catch (_) {}
+  }
+
+  // ---------------------------------------------------------------------------
+  //  PUNCHES
+  // ---------------------------------------------------------------------------
+  static Future<void> recordArrival(
+      {double? lat, double? lon, required String why}) async {
+    if (await PunchQueue.isClockedIn()) return; // already on the clock
+    await PunchQueue.setClockedIn(true);
+    await PunchQueue.add(
+      direction: 'in',
+      lat: lat ?? _lat,
+      lon: lon ?? _lon,
+      accuracy: 0,
+      crossedAt: DateTime.now(),
+      insideGeofence: true,
+    );
+    await Presence.ping(
+      insideGeofence: true,
+      insideWifi: await Presence.onShopWifi(_wifiSsid),
+      lat: lat,
+      lon: lon,
+      reason: why,
+      appState: await describeState(),
+    );
+  }
+
+  static Future<void> recordDeparture(
+      {double? lat, double? lon, required String why}) async {
+    if (!await PunchQueue.isClockedIn()) return; // already off the clock
+
+    // A departure while still on the shop network is GPS drift, not someone
+    // going home. Don't end a shift over it.
+    final wifi = await Presence.onShopWifi(_wifiSsid);
+    if (wifi == true) {
+      await Presence.ping(
+        insideGeofence: true,
+        insideWifi: true,
+        lat: lat,
+        lon: lon,
+        reason: '$why-suppressed-wifi',
+        appState: await describeState(),
+      );
+      return;
+    }
+
+    await PunchQueue.setClockedIn(false);
+    await PunchQueue.add(
+      direction: 'out',
+      lat: lat ?? _lat,
+      lon: lon ?? _lon,
+      accuracy: 0,
+      crossedAt: DateTime.now(),
+      insideGeofence: false,
+    );
+    await Presence.ping(
+      insideGeofence: false,
+      insideWifi: wifi,
+      lat: lat,
+      lon: lon,
+      reason: why,
+      appState: await describeState(),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  //  BACKSTOP
+  // ---------------------------------------------------------------------------
+  /// Read the current position and make the clock agree with reality.
+  ///
+  /// Runs whether or not we think we are on the clock: arriving unnoticed costs
+  /// someone their morning, leaving unnoticed costs them their afternoon.
+  ///
+  /// It will clock someone IN if it finds them at the shop, but never OUT — a
+  /// single stray fix must not end a shift. Departures belong to the fence, and
+  /// failing that to the server reading this ping trail.
+  static Future<void> recheck({required String reason}) async {
     await PunchQueue.flush();
     await Presence.flush();
-    await _reportPosition(reason: 'heartbeat');
-  }
 
-  /// Take a fresh fix and report it. The heartbeat event itself only carries a
-  /// last-known location, which can be hours stale, so we ask for a real one.
-  static Future<void> _reportPosition({required String reason}) async {
     final wifi = await Presence.onShopWifi(_wifiSsid);
+    final clockedIn = await PunchQueue.isClockedIn();
+
     try {
-      final loc = await bg.BackgroundGeolocation.getCurrentPosition(
-        samples: 1,
-        timeout: 30,
-        maximumAge: 60000,
-        desiredAccuracy: 40,
-        persist: false,
+      final pos = await geo.Geolocator.getCurrentPosition(
+        locationSettings: geo.LocationSettings(
+          accuracy: clockedIn
+              ? geo.LocationAccuracy.high
+              : geo.LocationAccuracy.medium,
+          timeLimit: const Duration(seconds: 30),
+        ),
       );
-      await _pingFrom(loc, reason: reason, wifi: wifi);
+      final metres = distanceM(pos.latitude, pos.longitude, _lat, _lon);
+      final inside = metres <= _radiusIn || wifi == true;
+
+      await Presence.ping(
+        insideGeofence: metres <= _radiusOut,
+        insideWifi: wifi,
+        lat: pos.latitude,
+        lon: pos.longitude,
+        accuracy: pos.accuracy,
+        reason: reason,
+        appState: await describeState(),
+      );
+
+      if (inside && !clockedIn) {
+        await recordArrival(
+            lat: pos.latitude, lon: pos.longitude, why: '$reason-arrival');
+      }
     } catch (_) {
-      // No fix available (indoors, GPS cold). Wi-Fi alone is still worth
-      // reporting — it is often the only signal that works in the shop.
       if (wifi != null) {
         await Presence.ping(
           insideGeofence: wifi,
           insideWifi: wifi,
           reason: '$reason-nofix',
+          appState: await describeState(),
         );
       }
     }
   }
 
-  static Future<void> _pingFrom(bg.Location loc,
-      {required String reason, bool? wifi}) async {
-    final metres = _distanceM(
-        loc.coords.latitude, loc.coords.longitude, _lat, _lon);
-    final w = wifi ?? await Presence.onShopWifi(_wifiSsid);
-    await Presence.ping(
-      insideGeofence: metres <= _radiusOut,
-      insideWifi: w,
-      lat: loc.coords.latitude,
-      lon: loc.coords.longitude,
-      accuracy: loc.coords.accuracy,
-      reason: reason,
-      appState: await describeState(),
-    );
-  }
-
-  /// A one-line snapshot of what the tracking engine is actually doing.
+  /// A one-line snapshot for the ping trail.
   ///
-  /// This exists because on 28 July the app restarted three times in 45 minutes
-  /// with no heartbeat and no fetch pings, and nothing in the data could
-  /// distinguish "the OS killed us" from "the tracking engine was never
-  /// running". Every explanation offered that evening, mine included, was
-  /// inference. Now the app says so itself.
+  /// The important field is now `fences` — whether the OS still holds our
+  /// geofences. That, not "is the app running", is the health question under
+  /// this architecture.
   static Future<String> describeState() async {
     final bits = <String>[];
+    final ids = await registeredFenceIds();
+    bits.add('fences=${ids == null ? "?" : (ids.isEmpty ? "NONE" : ids.join("/"))}');
     try {
-      final s = await bg.BackgroundGeolocation.state;
-      bits.add('enabled=${s.enabled}');
-      bits.add('moving=${s.isMoving}');
-      bits.add('trackingMode=${s.trackingMode}');
-      // NB: this is the CONFIGURED value inherited from Config, not proof the
-      // service is currently alive. Treat it as "we asked for one", and use the
-      // gaps between pings to judge whether we actually got one.
-      bits.add('fgServiceCfg=${s.foregroundService}');
-    } catch (e) {
-      bits.add('state=unavailable');
-    }
-    try {
-      bits.add(
-          'battExempt=${await bg.DeviceSettings.isIgnoringBatteryOptimizations}');
+      bits.add('locPerm=${await geo.Geolocator.checkPermission()}');
+      bits.add('locOn=${await geo.Geolocator.isLocationServiceEnabled()}');
     } catch (_) {}
-    try {
-      final st = await bg.BackgroundGeolocation.providerState;
-      bits.add('locAuth=${st.status}');
-      bits.add('locOn=${st.enabled}');
-    } catch (_) {}
+    bits.add('rIn=${_radiusIn.toStringAsFixed(0)}');
+    bits.add('rOut=${_radiusOut.toStringAsFixed(0)}');
     return bits.join(' ');
   }
 
-  // -------------------------------------------------------------------------
-  //  Startup reconciliation
-  // -------------------------------------------------------------------------
-  /// Geofences only fire on a boundary CROSSING, so a phone that is already
-  /// inside the zone when tracking starts produces no ENTER event.
-  static Future<void> _syncInitialPresence() async {
-    final wifi = await Presence.onShopWifi(_wifiSsid);
-    try {
-      final bg.Location loc = await bg.BackgroundGeolocation.getCurrentPosition(
-        samples: 1,
-        timeout: 30,
-        maximumAge: 10000,
-        desiredAccuracy: 40,
-        persist: false,
-      );
-      final metres = _distanceM(
-          loc.coords.latitude, loc.coords.longitude, _lat, _lon);
-      final inside = metres <= _radiusIn || wifi == true;
-      final alreadyOnSite = await PunchQueue.isClockedIn();
-
-      await _pingFrom(loc, reason: 'startup', wifi: wifi);
-
-      if (inside && !alreadyOnSite) {
-        await PunchQueue.setClockedIn(true);
-        await PunchQueue.add(
-          direction: 'in',
-          lat: loc.coords.latitude,
-          lon: loc.coords.longitude,
-          accuracy: loc.coords.accuracy,
-          crossedAt: DateTime.now(),
-          insideGeofence: true,
-        );
-      } else if (!inside && alreadyOnSite) {
-        // An exit was missed while the app was dead.
-        //
-        // The previous build cleared the flag here and wrote NOTHING, so the
-        // one mechanism meant to catch a missed exit was also the thing that
-        // destroyed the evidence of it. The day stayed clocked-in forever.
-        //
-        // We do NOT write an out punch here either — we cannot know when they
-        // left, and inventing a time is worse than not having one. Instead we
-        // report the position and let the server place the clock-out at the
-        // last moment it can actually prove the person was on site.
-        await Presence.ping(
-          insideGeofence: false,
-          insideWifi: wifi,
-          lat: loc.coords.latitude,
-          lon: loc.coords.longitude,
-          accuracy: loc.coords.accuracy,
-          reason: 'recovery',
-        );
-        await PunchQueue.setClockedIn(false);
-      }
-    } catch (_) {
-      // No fix right now. Still report Wi-Fi if it has an opinion.
-      if (wifi != null) {
-        await Presence.ping(
-            insideGeofence: wifi, insideWifi: wifi, reason: 'startup-nofix');
-      }
-    }
-  }
-
   /// Great-circle distance in metres (haversine).
-  static double _distanceM(double lat1, double lon1, double lat2, double lon2) {
+  static double distanceM(
+      double lat1, double lon1, double lat2, double lon2) {
     const earthR = 6371000.0;
     const rad = pi / 180.0;
     final dLat = (lat2 - lat1) * rad;
@@ -545,11 +420,4 @@ class Geofence {
         cos(lat1 * rad) * cos(lat2 * rad) * sin(dLon / 2) * sin(dLon / 2);
     return earthR * 2 * atan2(sqrt(a), sqrt(1 - a));
   }
-
-  // --- Exposed for the app's setup/health screen ---------------------------
-  static double get zoneLat => _lat;
-  static double get zoneLon => _lon;
-  static double get radiusIn => _radiusIn;
-  static double get radiusOut => _radiusOut;
-  static String? get wifiSsid => _wifiSsid;
 }
