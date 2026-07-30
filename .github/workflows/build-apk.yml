@@ -40,84 +40,182 @@ jobs:
           cp -r /tmp/appsrc/assets .
           cp /tmp/appsrc/pubspec.yaml .
 
-      - name: Add Android permissions to the manifest
+      # -----------------------------------------------------------------------
+      #  MANIFEST
+      #
+      #  Two jobs here. The permissions block, and — new and load-bearing — the
+      #  three native_geofence components.
+      #
+      #  Those three ARE the new architecture. The broadcast receiver is the
+      #  address Android delivers a fence crossing to; without it registered in
+      #  the manifest the OS has nowhere to send the event and the app is never
+      #  started. The reboot receiver re-arms the fences after a restart, since
+      #  Android does not keep them across boots. The foreground service is what
+      #  the callback promotes itself to so it has time to write the punch to
+      #  Supabase.
+      #
+      #  Miss any of these and the build succeeds, the app installs, the
+      #  checklist looks green, and no punch is ever recorded. Verified below.
+      # -----------------------------------------------------------------------
+      - name: Patch the AndroidManifest
         run: |
           python3 - <<'PY'
-          import re, io
+          import re, sys
           p = "android/app/src/main/AndroidManifest.xml"
           s = open(p, encoding="utf-8").read()
+
           perms = [
+            # Required by native_geofence to create a fence at all.
             "ACCESS_FINE_LOCATION","ACCESS_COARSE_LOCATION","ACCESS_BACKGROUND_LOCATION",
-            "ACTIVITY_RECOGNITION","FOREGROUND_SERVICE","FOREGROUND_SERVICE_LOCATION",
-            "RECEIVE_BOOT_COMPLETED","WAKE_LOCK","INTERNET",
+            # Re-register fences after a reboot.
+            "RECEIVE_BOOT_COMPLETED",
+            # Only needed because the callback promotes to a foreground service.
+            "WAKE_LOCK","FOREGROUND_SERVICE","FOREGROUND_SERVICE_LOCATION",
+            "POST_NOTIFICATIONS",
+            "INTERNET",
             # Lets the app ASK to be exempted from Doze instead of someone
             # having to dig through Android settings on every crew phone.
-            # Without it the in-app "Fix now" button cannot work.
             "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
             # Wi-Fi presence backup (network_info_plus).
             "ACCESS_WIFI_STATE","CHANGE_WIFI_STATE","ACCESS_NETWORK_STATE",
           ]
-          block = "".join(f'    <uses-permission android:name="android.permission.{x}" />\n' for x in perms)
-          if "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" not in s:
+          block = "".join(
+            f'    <uses-permission android:name="android.permission.{x}" />\n'
+            for x in perms)
+          if "ACCESS_BACKGROUND_LOCATION" not in s:
             s = re.sub(r"(<manifest[^>]*>\s*)", r"\1\n" + block, s, count=1)
+
           if "xmlns:tools" not in s:
-            s = s.replace("<manifest ", '<manifest xmlns:tools="http://schemas.android.com/tools" ', 1)
+            s = s.replace("<manifest ",
+                          '<manifest xmlns:tools="http://schemas.android.com/tools" ', 1)
           if "tools:replace" not in s:
             s = re.sub(r"(<application\b)", r'\1 tools:replace="android:label"', s, count=1)
+
           # The launcher label was never set, so Flutter defaulted it to the
-          # project name. Android showed the app as "ppc_timeclock" in every
-          # settings screen — which made it effectively unfindable when hunting
-          # through battery and notification menus looking for "Paragon".
-          s = re.sub(r'android:label="[^"]*"', 'android:label="Paragon Time Clock"', s, count=1)
+          # project name and Android showed the app as "ppc_timeclock" in every
+          # settings screen — unfindable when hunting for "Paragon".
+          s = re.sub(r'android:label="[^"]*"', 'android:label="Paragon Time Clock"',
+                     s, count=1)
+
+          NG = """
+    <!-- native_geofence: the OS delivers fence crossings here and this starts the app. -->
+    <receiver android:name="com.chunkytofustudios.native_geofence.receivers.NativeGeofenceBroadcastReceiver"
+              android:exported="true"/>
+    <!-- native_geofence: Android drops geofences on reboot; this re-registers them. -->
+    <receiver android:name="com.chunkytofustudios.native_geofence.receivers.NativeGeofenceRebootBroadcastReceiver"
+              android:exported="true">
+        <intent-filter>
+            <action android:name="android.intent.action.BOOT_COMPLETED"/>
+        </intent-filter>
+    </receiver>
+    <!-- native_geofence: the callback promotes to this to finish writing the punch. -->
+    <service android:name="com.chunkytofustudios.native_geofence.NativeGeofenceForegroundService"
+             android:permission="android.permission.BIND_JOB_SERVICE"
+             android:exported="true"/>
+"""
+          if "NativeGeofenceBroadcastReceiver" not in s:
+            s = s.replace("</application>", NG + "    </application>", 1)
+
           open(p, "w", encoding="utf-8").write(s)
-          print("manifest patched")
+
+          # Verify, don't assume. A missing receiver produces a perfectly green
+          # build and a clock that never fires — exactly the failure mode this
+          # rebuild exists to eliminate.
+          check = open(p, encoding="utf-8").read()
+          required = [
+            "NativeGeofenceBroadcastReceiver",
+            "NativeGeofenceRebootBroadcastReceiver",
+            "NativeGeofenceForegroundService",
+            "ACCESS_BACKGROUND_LOCATION",
+            "RECEIVE_BOOT_COMPLETED",
+          ]
+          missing = [r for r in required if r not in check]
+          if missing:
+            sys.exit("MANIFEST PATCH FAILED, missing: " + ", ".join(missing))
+          print("manifest patched and verified")
           PY
 
-      - name: Configure Gradle for background geolocation
+      # -----------------------------------------------------------------------
+      #  GRADLE
+      #
+      #  native_geofence requires Kotlin 1.9.25+, Gradle 8+ and minSdk 23.
+      #  The Kotlin bump is version-aware: newer Flutter scaffolds already ship
+      #  2.x and forcing 1.9.25 would be a downgrade.
+      # -----------------------------------------------------------------------
+      - name: Configure Gradle
         run: |
           python3 - <<'PY'
-          import os
+          import os, re, sys
+
+          MIN_KOTLIN = (1, 9, 25)
+
+          def ver(t):
+            parts = (list(map(int, t.split("."))) + [0, 0])[:3]
+            return tuple(parts)
+
+          def bump_kotlin(f):
+            if not os.path.exists(f): return
+            s = open(f, encoding="utf-8").read()
+            out, changed = s, False
+            for m in re.finditer(
+                r'(org\.jetbrains\.kotlin\.android["\']?\)?\s+version\s+["\'])([0-9.]+)(["\'])', s):
+              if ver(m.group(2)) < MIN_KOTLIN:
+                out = out.replace(m.group(0), m.group(1) + "1.9.25" + m.group(3))
+                changed = True
+            for m in re.finditer(r'(ext\.kotlin_version\s*=\s*["\'])([0-9.]+)(["\'])', s):
+              if ver(m.group(2)) < MIN_KOTLIN:
+                out = out.replace(m.group(0), m.group(1) + "1.9.25" + m.group(3))
+                changed = True
+            if changed:
+              open(f, "w", encoding="utf-8").write(out)
+              print("kotlin bumped to 1.9.25 in", f)
+
+          for f in ["android/settings.gradle", "android/settings.gradle.kts",
+                    "android/build.gradle", "android/build.gradle.kts"]:
+            bump_kotlin(f)
+
+          # background_fetch ships its Android library in a local maven folder.
+          # (The flutter_background_geolocation repos that used to be here are
+          # gone with the plugin — that engine is what we replaced.)
           def repos(kts):
             if kts:
-              return [
-                'maven { url = uri("${project(":flutter_background_geolocation").projectDir}/libs") }',
-                'maven { url = uri("https://developer.huawei.com/repo/") }',
-                'maven { url = uri("${project(":background_fetch").projectDir}/libs") }',
-              ]
-            return [
-              'maven { url "${project(\':flutter_background_geolocation\').projectDir}/libs" }',
-              "maven { url 'https://developer.huawei.com/repo/' }",
-              'maven { url "${project(\':background_fetch\').projectDir}/libs" }',
-            ]
+              return ['maven { url = uri("${project(":background_fetch").projectDir}/libs") }']
+            return ['maven { url "${project(\':background_fetch\').projectDir}/libs" }']
+
           def inject(f, anchor):
             s = open(f, encoding="utf-8").read()
-            if "flutter_background_geolocation" in s: return
+            if "background_fetch" in s: return
             if anchor not in s or "repositories {" not in s: return
             idx = s.index(anchor)
             ridx = s.index("repositories {", idx) + len("repositories {")
             s = s[:ridx] + "\n        " + "\n        ".join(repos(f.endswith(".kts"))) + s[ridx:]
             open(f, "w", encoding="utf-8").write(s)
             print("patched", f)
+
           for f in ["android/settings.gradle", "android/settings.gradle.kts"]:
             if os.path.exists(f): inject(f, "dependencyResolutionManagement")
           for f in ["android/build.gradle", "android/build.gradle.kts"]:
             if os.path.exists(f): inject(f, "allprojects")
-          # minSdk 21 for the plugin
+
+          # minSdk 23 — native_geofence's floor, up from the 21 the old plugin
+          # allowed. Android API 23 is 2015 hardware; nothing in the shop is
+          # near that.
           for f in ["android/app/build.gradle", "android/app/build.gradle.kts"]:
             if os.path.exists(f):
               s = open(f, encoding="utf-8").read()
-              s = s.replace("minSdkVersion flutter.minSdkVersion", "minSdkVersion 21")
-              s = s.replace("minSdk = flutter.minSdkVersion", "minSdk = 21")
-              s = s.replace("minSdk flutter.minSdkVersion", "minSdk 21")
+              s = s.replace("minSdkVersion flutter.minSdkVersion", "minSdkVersion 23")
+              s = s.replace("minSdk = flutter.minSdkVersion", "minSdk = 23")
+              s = s.replace("minSdk flutter.minSdkVersion", "minSdk 23")
               s = s.replace("compileSdk = flutter.compileSdkVersion", "compileSdk = 36")
               s = s.replace("compileSdkVersion flutter.compileSdkVersion", "compileSdkVersion 36")
               s = s.replace("compileSdk flutter.compileSdkVersion", "compileSdk 36")
               open(f, "w", encoding="utf-8").write(s)
               print("sdk versions set in", f)
-          # Force EVERY Android subproject (incl. plugins like flutter_background_geolocation)
-          # to compileSdk 36 — background_fetch requires its dependents to compile against 36.
-          # NB: apply directly when the subproject is already evaluated (Flutter's root
-          # script forces early evaluation via evaluationDependsOn), else afterEvaluate.
+
+          # Force EVERY Android subproject to compileSdk 36 — background_fetch
+          # requires its dependents to compile against 36. Apply directly when
+          # the subproject is already evaluated (Flutter's root script forces
+          # early evaluation), else afterEvaluate.
           kts_block = (
             "\n\nsubprojects {\n"
             "    val setSdk = fun(p: org.gradle.api.Project) {\n"
@@ -151,12 +249,23 @@ jobs:
             s = open("android/build.gradle.kts", encoding="utf-8").read()
             if "setSdk" not in s:
               open("android/build.gradle.kts", "a", encoding="utf-8").write(kts_block)
-              print("appended subprojects compileSdk override to android/build.gradle.kts")
+              print("appended subprojects compileSdk override (kts)")
           elif os.path.exists("android/build.gradle"):
             s = open("android/build.gradle", encoding="utf-8").read()
             if "setSdk" not in s:
               open("android/build.gradle", "a", encoding="utf-8").write(gr_block)
-              print("appended subprojects compileSdk override to android/build.gradle")
+              print("appended subprojects compileSdk override (groovy)")
+
+          # Gradle 8+ is a native_geofence requirement. Report it rather than
+          # silently building something that will fail obscurely later.
+          wp = "android/gradle/wrapper/gradle-wrapper.properties"
+          if os.path.exists(wp):
+            w = open(wp, encoding="utf-8").read()
+            m = re.search(r"gradle-([0-9.]+)-", w)
+            if m:
+              print("gradle wrapper version:", m.group(1))
+              if ver(m.group(1))[0] < 8:
+                sys.exit("Gradle 8+ required by native_geofence, found " + m.group(1))
           PY
 
       - name: Get packages
@@ -165,11 +274,37 @@ jobs:
       - name: Generate the launcher icon (black PPC shield)
         run: dart run flutter_launcher_icons
 
+      # Static analysis before we spend ten minutes on a build. Catches the
+      # class of error that cost builds #30-32 — a name collision between our
+      # classes and a package's exports — in about fifteen seconds.
+      - name: Analyse
+        run: flutter analyze --no-fatal-infos
+
       # --split-per-abi builds one APK per CPU architecture instead of a single
       # fat one carrying all of them. The old combined debug APK was 161 MB,
       # most of which was machine code for chips the phone does not have.
       - name: Build APK (debug — installable, no keystore needed)
         run: flutter build apk --debug --split-per-abi
+
+      # Prove the geofence machinery actually made it into the shipped binary.
+      # A build can succeed with the manifest patch silently skipped.
+      - name: Verify the built APK contains the geofence receivers
+        run: |
+          set -e
+          APK=build/app/outputs/flutter-apk/app-arm64-v8a-debug.apk
+          AAPT=$(ls $ANDROID_HOME/build-tools/*/aapt2 | tail -1)
+          "$AAPT" dump xmltree --file AndroidManifest.xml "$APK" > /tmp/manifest.txt
+          for NAME in NativeGeofenceBroadcastReceiver \
+                      NativeGeofenceRebootBroadcastReceiver \
+                      NativeGeofenceForegroundService \
+                      ACCESS_BACKGROUND_LOCATION; do
+            if grep -q "$NAME" /tmp/manifest.txt; then
+              echo "OK   $NAME"
+            else
+              echo "FAIL $NAME missing from the built APK"
+              exit 1
+            fi
+          done
 
       # Name the outputs for humans. arm64 is every Android phone made since
       # roughly 2017 — that is the one crew install. v7a is kept only as a
@@ -186,72 +321,25 @@ jobs:
           ls -la /tmp/out
 
       # ----------------------------------------------------------------------
-      #  GEOFENCE REGRESSION TEST
+      #  NOTE ON THE EMULATOR GEOFENCE TEST — REMOVED, DELIBERATELY.
       #
-      #  Builds an x86_64 APK, runs it on an emulator, and drives the phone in
-      #  and out of the shop zone with `adb emu geo fix`. Proves the fence
-      #  fires without anyone holding a handset.
+      #  The emulator step that used to live here has been deleted rather than
+      #  left running, because under this architecture it cannot tell the truth.
+      #  From native_geofence's own documented known issues:
       #
-      #  WHAT THIS CATCHES: a broken geofence registration, a wrong radius, the
-      #  app failing to start, punches not reaching Supabase.
+      #    "Android: The emulator does not trigger geofence events if there are
+      #     no apps accessing the device location."
       #
-      #  WHAT IT CANNOT CATCH: Doze, Samsung's app-killer, or a real phone
-      #  deciding to shut the service down. An emulator is a friendly machine.
-      #  A green run here means "the code is right", never "it will survive a
-      #  real phone" — those are different claims and conflating them is how
-      #  two evenings got lost.
+      #  So a green run would have proved nothing and a red run would have meant
+      #  nothing — and a test that can only mislead is worse than no test. This
+      #  is the same mistake as reading `enabled=true` off a config object and
+      #  calling it proof the service was running.
       #
-      #  Non-blocking on purpose: a flaky emulator must never stop the crew
-      #  getting an APK.
+      #  The manifest verification above is the real automated check: it proves
+      #  the OS has somewhere to deliver a crossing to. Whether a crossing
+      #  actually fires is verified on a real phone with Lockito, driving a
+      #  route rather than dropping a static pin — see VERIFY-ON-PHONE.md.
       # ----------------------------------------------------------------------
-      - name: Build x86_64 APK for the emulator
-        continue-on-error: true
-        run: flutter build apk --debug --target-platform android-x64
-
-      - name: Enable KVM
-        continue-on-error: true
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' \
-            | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm
-
-      - name: Geofence test on emulator
-        continue-on-error: true
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 33
-          target: google_apis
-          arch: x86_64
-          profile: pixel_6
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: |
-            set -x
-            adb install -r build/app/outputs/flutter-apk/app-debug.apk || \
-              adb install -r build/app/outputs/flutter-apk/app-x86_64-debug.apk
-
-            PKG=ca.paragonprotectivecoatings.ppc_timeclock
-            # Grant up front — an emulator has nobody to tap the dialogs.
-            for P in ACCESS_FINE_LOCATION ACCESS_COARSE_LOCATION \
-                     ACCESS_BACKGROUND_LOCATION POST_NOTIFICATIONS \
-                     ACTIVITY_RECOGNITION; do
-              adb shell pm grant $PKG android.permission.$P || true
-            done
-
-            # Start AT the shop, so the app's startup check should clock in.
-            adb emu geo fix -113.357603 53.513522
-            adb shell monkey -p $PKG -c android.intent.category.LAUNCHER 1 || true
-            sleep 45
-            echo "--- should be INSIDE the zone ---"
-            adb logcat -d -s TSLocationManager | tail -40
-
-            # Now drive out well past the 200 m exit radius.
-            for STEP in 0.0010 0.0025 0.0050 0.0090; do
-              adb emu geo fix -113.357603 $(python3 -c "print(53.513522 + $STEP)")
-              sleep 12
-            done
-            sleep 30
-            echo "--- should have EXITED the zone ---"
-            adb logcat -d -s TSLocationManager | tail -60
 
       - name: Upload the APK
         uses: actions/upload-artifact@v4
