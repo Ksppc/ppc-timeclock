@@ -149,7 +149,7 @@ class ShopFence {
               'center_lat, center_lon, clock_in_radius_m, clock_out_radius_m, wifi_ssid')
           .eq('active', true)
           .limit(1);
-      if (rows is List && rows.isNotEmpty) {
+      if (rows.isNotEmpty) {
         final z = rows.first as Map;
         _lat = (z['center_lat'] as num).toDouble();
         _lon = (z['center_lon'] as num).toDouble();
