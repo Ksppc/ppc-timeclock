@@ -54,13 +54,34 @@ const String kFenceOut = 'ppc-shop-out';
 // -----------------------------------------------------------------------------
 @pragma('vm:entry-point')
 Future<void> shopFenceTriggered(ng.GeofenceCallbackParams params) async {
-  // Writing a punch means a network call. The package's own guidance is to
-  // promote to a foreground service for anything heavier than a notification,
-  // so the OS does not cut us off mid-request.
-  try {
-    await ng.NativeGeofenceBackgroundManager.instance.promoteToForeground();
-  } catch (_) {}
-
+  // ---------------------------------------------------------------------------
+  //  DO NOT PROMOTE TO A FOREGROUND SERVICE HERE.
+  //
+  //  This callback used to start with promoteToForeground(), on the package's
+  //  suggestion that anything heavier than a notification should run as a
+  //  foreground service. On 29 July that turned every single geofence crossing
+  //  into "Paragon Time Clock keeps stopping". The fence was firing perfectly;
+  //  the app died before it could write anything, which is why the trail looked
+  //  like a fence that never triggered.
+  //
+  //  Modern Android does not allow an app woken by a broadcast to start a
+  //  foreground service on a whim. Since Android 12 a background start throws
+  //  ForegroundServiceStartNotAllowedException, and since Android 14 a service
+  //  must declare a foregroundServiceType or the system refuses it outright.
+  //  Either way the system kills the process.
+  //
+  //  Note the old code had this call wrapped in try/catch and it made no
+  //  difference — the exception is raised by the system against the service's
+  //  own lifecycle, not returned to the Dart caller. A Dart catch block cannot
+  //  save you from the platform deciding to kill your process. That is a
+  //  general lesson worth keeping: try/catch protects you from your code, not
+  //  from the operating system.
+  //
+  //  It is not needed anyway. A broadcast receiver gets roughly ten seconds,
+  //  and writing one punch is a single row into SharedPreferences followed by
+  //  one HTTP POST. If the POST is cut short the punch is ALREADY saved locally
+  //  and the queue flushes it later. That is what the offline queue is for.
+  // ---------------------------------------------------------------------------
   try {
     await ShopFence.ensureSupabase();
 
@@ -90,10 +111,6 @@ Future<void> shopFenceTriggered(ng.GeofenceCallbackParams params) async {
     }
   } catch (_) {
     // Never let the callback throw — the OS may not deliver again.
-  } finally {
-    try {
-      await ng.NativeGeofenceBackgroundManager.instance.demoteToBackground();
-    } catch (_) {}
   }
 }
 
