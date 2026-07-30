@@ -1,7 +1,7 @@
 name: ppc_timeclock
-description: Paragon GPS Time Clock — silent geofence punch (Android beta).
+description: Paragon GPS Time Clock — silent geofence punch.
 publish_to: "none"
-version: 0.1.0+1
+version: 0.2.0+2
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -9,28 +9,51 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  # Robust background geofencing (enter/exit even when app is killed).
-  flutter_background_geolocation: ^4.16.0
-  # Android's supported mechanism for periodic work that must ACTUALLY run —
-  # survives Doze, app termination and reboot. Ships as a dependency of the
-  # geolocation plugin, declared here so we can import it directly.
-  # This replaces heartbeatInterval, which does not fire on Android while the
-  # device is stationary (verified: zero heartbeat pings in a 10-hour shift).
+
+  # ---------------------------------------------------------------------------
+  #  THE CLOCK
+  #
+  #  Wraps the operating system's OWN geofencing — GeofencingClient on Android,
+  #  CLLocationManager region monitoring on iOS. The fence is handed to the OS,
+  #  and the OS starts this app when it is crossed. Works with the app
+  #  terminated; re-registers itself after a reboot.
+  #
+  #  This replaces flutter_background_geolocation, which ran its own tracking
+  #  engine inside this app's process and therefore needed the process to stay
+  #  alive. It did not: on 29 July the app went silent at 07:22 and no exit was
+  #  ever recorded. Every fix we tried — wider radius, heartbeat, foreground
+  #  service, battery exemption — was an attempt to keep alive a process Android
+  #  had already decided to kill. The OS was never going to lose that argument.
+  #
+  #  MIT licensed, which also removes the per-app licence fee that would have
+  #  applied to the old library on iOS.
+  native_geofence: ^1.2.2
+
+  # Periodic backstop, in case a fence event is genuinely lost. Secondary now —
+  # the fences are the mechanism, this is the check on them.
   background_fetch: ^1.3.0
-  # Android 13+ denies notifications until the app asks. The app never asked,
-  # so the foreground service could not display its persistent notification —
-  # and a foreground service you cannot see is one you cannot verify is running.
+
+  # Single position reads for that backstop and for the "where am I?" check when
+  # the app is opened. Deliberately a plain position reader with no background
+  # engine of its own — that was the old mistake.
+  geolocator: ^14.0.0
+
+  # Runtime permissions: location, location-always, notifications, and the
+  # battery-optimisation exemption. native_geofence deliberately does not handle
+  # permissions and its own docs point here.
   permission_handler: ^11.3.0
+
   # Supabase client for inserting punches.
   supabase_flutter: ^2.5.0
+
   # Local offline queue.
   shared_preferences: ^2.2.0
   connectivity_plus: ^6.0.0
+
   # Reads the connected Wi-Fi SSID. Second presence signal: inside a steel
   # building GPS can read as "off site" while the person is standing in the
   # shop, and being joined to the shop network proves otherwise at no battery
-  # cost. If this package ever breaks the build it can be removed — see
-  # Presence.onShopWifi(), which fails soft to "no opinion".
+  # cost. Fails soft to "no opinion" — see Presence.onShopWifi().
   network_info_plus: ^5.0.0
 
 dev_dependencies:
