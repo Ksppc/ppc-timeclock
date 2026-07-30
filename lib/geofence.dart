@@ -276,14 +276,20 @@ class ShopFence {
   //  PUNCHES
   // ---------------------------------------------------------------------------
   static Future<void> recordArrival(
-      {double? lat, double? lon, required String why}) async {
+      {double? lat, double? lon, double? accuracy, required String why}) async {
     if (await PunchQueue.isClockedIn()) return; // already on the clock
+    // Flip the state BEFORE writing, so a second callback arriving a
+    // millisecond later sees "already clocked in" and stops.
     await PunchQueue.setClockedIn(true);
     await PunchQueue.add(
       direction: 'in',
-      lat: lat ?? _lat,
-      lon: lon ?? _lon,
-      accuracy: 0,
+      // Pass the position through exactly as given. If Android delivered the
+      // geofence event without one, these stay null — previously they fell
+      // back to the shop's own coordinates, which fabricates a precise fix at
+      // the shop that nothing ever measured.
+      lat: lat,
+      lon: lon,
+      accuracy: accuracy,
       crossedAt: DateTime.now(),
       insideGeofence: true,
     );
@@ -298,7 +304,7 @@ class ShopFence {
   }
 
   static Future<void> recordDeparture(
-      {double? lat, double? lon, required String why}) async {
+      {double? lat, double? lon, double? accuracy, required String why}) async {
     if (!await PunchQueue.isClockedIn()) return; // already off the clock
 
     // A departure while still on the shop network is GPS drift, not someone
@@ -319,9 +325,9 @@ class ShopFence {
     await PunchQueue.setClockedIn(false);
     await PunchQueue.add(
       direction: 'out',
-      lat: lat ?? _lat,
-      lon: lon ?? _lon,
-      accuracy: 0,
+      lat: lat,
+      lon: lon,
+      accuracy: accuracy,
       crossedAt: DateTime.now(),
       insideGeofence: false,
     );
@@ -377,7 +383,10 @@ class ShopFence {
 
       if (inside && !clockedIn) {
         await recordArrival(
-            lat: pos.latitude, lon: pos.longitude, why: '$reason-arrival');
+            lat: pos.latitude,
+            lon: pos.longitude,
+            accuracy: pos.accuracy,
+            why: '$reason-arrival');
       }
     } catch (_) {
       if (wifi != null) {

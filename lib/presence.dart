@@ -57,21 +57,44 @@ class Presence {
   }
 
   /// Push everything queued; keep whatever fails for the next attempt.
+  ///
+  /// Claim-then-send, for the same reason as PunchQueue.flush(): the old
+  /// read-send-then-write order let two overlapping flushes send the same row
+  /// twice, and on 29 July that duplicated a clock-in. Pings matter less than
+  /// punches — they are evidence, not pay — but a doubled evidence trail is
+  /// still a trail that lies about how often the phone reported in.
+  static bool _flushing = false;
+
   static Future<void> flush() async {
-    final prefs = await SharedPreferences.getInstance();
-    final list = prefs.getStringList(_key) ?? [];
-    if (list.isEmpty) return;
-    final remaining = <String>[];
-    for (final item in list) {
-      try {
-        await Supabase.instance.client
-            .from('presence_pings')
-            .insert(jsonDecode(item));
-      } catch (_) {
-        remaining.add(item);
+    if (_flushing) return;
+    _flushing = true;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final claimed = prefs.getStringList(_key) ?? [];
+      if (claimed.isEmpty) return;
+      await prefs.setStringList(_key, const []);
+
+      final failed = <String>[];
+      for (final item in claimed) {
+        try {
+          await Supabase.instance.client
+              .from('presence_pings')
+              .insert(jsonDecode(item));
+        } catch (_) {
+          failed.add(item);
+        }
       }
+      if (failed.isNotEmpty) {
+        final current = prefs.getStringList(_key) ?? [];
+        var merged = [...failed, ...current];
+        if (merged.length > 500) {
+          merged = merged.sublist(merged.length - 500);
+        }
+        await prefs.setStringList(_key, merged);
+      }
+    } finally {
+      _flushing = false;
     }
-    await prefs.setStringList(_key, remaining);
   }
 
   static Future<int> pendingCount() async {
