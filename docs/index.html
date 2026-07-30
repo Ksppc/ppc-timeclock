@@ -164,12 +164,12 @@
        entire shift and nobody knew until payroll looked wrong. A phone that
        has gone quiet must be obvious in the morning, not at month end. -->
   <div class="card" id="healthCard" style="margin-bottom:22px">
-    <div class="card-h"><h2>Phone health &mdash; today</h2><span class="count" id="healthCount">&mdash;</span></div>
+    <div class="card-h"><h2>Phone health</h2><span class="count" id="healthCount">&mdash;</span></div>
     <div style="overflow-x:auto"><table>
-      <thead><tr><th>Employee</th><th>Status</th><th>Position reports</th><th>Last report</th><th>Signals seen</th></tr></thead>
+      <thead><tr><th>Employee</th><th>Shop fence</th><th>Last heard from</th><th>Reports today</th><th>Signals seen</th></tr></thead>
       <tbody id="healthBody"></tbody>
     </table></div>
-    <div style="padding:10px 16px"><span class="note" style="margin:0">A clocked-in phone should report roughly every 15 minutes. Long silences mean the app has been put to sleep &mdash; check that phone's battery settings before the day's hours are trusted.</span></div>
+    <div style="padding:10px 16px"><span class="note" style="margin:0">The question that matters is whether <b>Android is still watching the shop boundary</b> for each phone &mdash; that is the "Shop fence" column. The app itself is meant to be closed almost all the time now, so a quiet phone is normal and is no longer treated as a fault. A phone whose fence is missing will not record hours: have them open the app and tap <b>Re-arm</b>.</span></div>
   </div>
 
   <div class="card hide" id="staleCard" style="margin-bottom:22px;border-color:rgba(181,114,0,.45);box-shadow:0 4px 16px rgba(181,114,0,.12)">
@@ -514,49 +514,85 @@
   // max_open_hours rule is surfaced immediately rather than waiting for the
   // nightly job to reclassify the day.
   // ---- Phone health --------------------------------------------------------
-  // Counts today's position reports per person and how long ago the last one
-  // arrived. The whole point is that "this phone stopped talking" is visible
-  // at a glance instead of being discovered when the hours look wrong.
+  // REWRITTEN 29 July 2026, when the app moved onto Android's own geofencing.
+  //
+  // This panel used to ask "is the app still reporting?" and go amber after 45
+  // minutes of silence. That was the right question when the app carried its
+  // own tracking engine and had to stay alive to notice anything. It is the
+  // WRONG question now: the shop boundary is watched by Android, which starts
+  // the app when it is crossed, so a silent phone is the normal, healthy,
+  // battery-friendly state. Left alone, this panel would have gone amber for
+  // every phone, every day — and a panel that cries wolf is a panel nobody
+  // reads.
+  //
+  // What genuinely breaks hours now is the fence going missing from the OS —
+  // usually because location permission got knocked back to "while using the
+  // app". Each ping carries the app's own answer in app_state ("fences=..."),
+  // so we read it back rather than inferring it from outside.
   async function renderHealth(empById){
     try{
       const edFmt=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Edmonton'});
       const today=edFmt.format(new Date());
-      const since=new Date(Date.now()-36*3600*1000).toISOString();
-      const pings=await rest(`presence_pings?ping_time=gte.${since}&select=employee_id,ping_time,reason&order=ping_time.desc`);
-      const mine=pings.filter(p=>edFmt.format(new Date(p.ping_time))===today);
+      // 14 days: the app may legitimately not run for days at a stretch.
+      const since=new Date(Date.now()-14*24*3600*1000).toISOString();
+      const pings=await rest(`presence_pings?ping_time=gte.${since}&select=employee_id,ping_time,reason,app_state&order=ping_time.desc`);
 
       const by={};
-      mine.forEach(p=>{
-        const b=by[p.employee_id]=by[p.employee_id]||{n:0,last:null,reasons:{}};
-        b.n++; b.reasons[p.reason]=(b.reasons[p.reason]||0)+1;
-        if(!b.last||new Date(p.ping_time)>new Date(b.last)) b.last=p.ping_time;
+      pings.forEach(p=>{
+        const b=by[p.employee_id]=by[p.employee_id]||{n:0,last:null,state:null,reasons:{}};
+        if(edFmt.format(new Date(p.ping_time))===today){
+          b.n++; b.reasons[p.reason]=(b.reasons[p.reason]||0)+1;
+        }
+        // Rows arrive newest-first, so the first one we see is the latest.
+        if(!b.last){ b.last=p.ping_time; b.state=p.app_state||''; }
       });
 
-      // Only people who actually worked today are worth judging.
       const active=(ALL_EMPS||[]).filter(e=>e.active);
       let concerns=0;
       const rows=active.map((e,i)=>{
         const b=by[e.id];
         const n=b?b.n:0;
-        const mins=b&&b.last?Math.round((Date.now()-new Date(b.last))/60000):null;
-        // A phone reporting every ~15 min is healthy. 45+ min of silence, or
-        // nothing at all from someone who punched in, is worth looking at.
+        const hrs=b&&b.last?(Date.now()-new Date(b.last))/3600000:null;
+
+        // Pull "fences=..." straight out of what the phone reported.
+        let fences=null;
+        if(b&&b.state){ const m=/fences=(\S*)/.exec(b.state); if(m) fences=m[1]; }
+        const armed = fences && fences.indexOf('ppc-shop-in')>=0
+                              && fences.indexOf('ppc-shop-out')>=0;
+
         let chip, worry=false;
-        if(n===0){ chip='<span class="chip warn">no reports</span>'; }
-        else if(mins!==null&&mins>45){ chip=`<span class="chip ser">quiet ${mins} min</span>`; worry=true; }
-        else { chip='<span class="chip ok">reporting</span>'; }
-        if(worry||n===0) concerns++;
-        const sigs=b?Object.entries(b.reasons).sort((a,c)=>c[1]-a[1])
+        if(!b){
+          chip='<span class="chip warn">never reported</span>'; worry=true;
+        } else if(armed){
+          chip='<span class="chip ok">armed</span>';
+        } else if(fences==='NONE'){
+          // The phone asked Android and Android said it is watching nothing.
+          chip='<span class="chip ser">NOT armed</span>'; worry=true;
+        } else if(fences==='?'||fences===null){
+          // Could not ask — not the same as "no fences", and not an alarm.
+          chip='<span class="chip warn">unknown</span>';
+        } else {
+          chip=`<span class="chip ser">partial</span>`; worry=true;
+        }
+        // Stale only in the "this app has not run in a fortnight" sense.
+        if(b && hrs!==null && hrs>14*24){ worry=true; }
+        if(worry) concerns++;
+
+        const ago = !b ? '<span style="color:var(--muted)">&mdash;</span>'
+          : hrs<24 ? hm(b.last)
+          : `${Math.floor(hrs/24)} d ago`;
+        const sigs=b&&n?Object.entries(b.reasons).sort((a,c)=>c[1]-a[1])
                     .map(([k,v])=>`${k}&nbsp;${v}`).join(' &middot; ')
                   :'<span style="color:var(--muted)">&mdash;</span>';
         return `<tr><td><div class="nm-cell">${av(e.full_name,i)}<span class="name">${e.full_name}</span></div></td>`
-             + `<td>${chip}</td><td class="num">${n}</td>`
-             + `<td class="num">${b&&b.last?hm(b.last):'&mdash;'}</td>`
+             + `<td>${chip}</td>`
+             + `<td class="num">${ago}</td>`
+             + `<td class="num">${n}</td>`
              + `<td style="font-size:12px;color:var(--ink-2)">${sigs}</td></tr>`;
       });
       $('healthBody').innerHTML = rows.length?rows.join('')
         :'<tr><td colspan="5" class="empty">No active crew.</td></tr>';
-      $('healthCount').textContent = concerns? `${concerns} to check` : 'all reporting';
+      $('healthCount').textContent = concerns? `${concerns} to check` : 'all armed';
     }catch(e){
       // presence_pings missing = reconciliation SQL not run yet.
       $('healthBody').innerHTML='<tr><td colspan="5" class="empty">Position reporting not set up yet.</td></tr>';
@@ -716,7 +752,7 @@
       $('punches').innerHTML = punches.length? punches.map((p,i)=>{
         const e=empById[p.employee_id]||{full_name:'Unknown'};
         const dir = p.direction==='in'?'<span class="chip ok">● in</span>':'<span class="chip ser">▲ out</span>';
-        return `<tr><td><div class="nm-cell">${av(e.full_name,i)}<span class="name">${e.full_name}</span></div></td><td class="num">${hm(p.event_time)}</td><td>${dir}</td><td class="num">${p.gps_accuracy_m??'—'} m</td><td>${p.source}</td></tr>`;
+        return `<tr><td><div class="nm-cell">${av(e.full_name,i)}<span class="name">${e.full_name}</span></div></td><td class="num">${hm(p.event_time)}</td><td>${dir}</td><td class="num">${p.gps_accuracy_m==null?'—':p.gps_accuracy_m+' m'}</td><td>${p.source}</td></tr>`;
       }).join('') : '<tr><td colspan="5" class="empty">No punches today yet.</td></tr>';
 
       const byEmp={}; let review=0; const flagged=[];
