@@ -334,6 +334,19 @@ class ShopFence {
   static Future<void> recordArrival(
       {double? lat, double? lon, double? accuracy, required String why}) async {
     if (await PunchQueue.isClockedIn()) return; // already on the clock
+    // Second, independent stop. Even if the flag is wrong — and on 31 July it
+    // was wrong every fifteen minutes for a whole day — nobody legitimately
+    // arrives twice inside ten minutes.
+    if (await PunchQueue.tooSoonFor('in')) {
+      await Presence.ping(
+        insideGeofence: true,
+        lat: lat,
+        lon: lon,
+        reason: '$why-suppressed-repeat',
+        appState: 'blocked a repeat clock-in within 10 min',
+      );
+      return;
+    }
     final at = DateTime.now();
     // Flip the state BEFORE writing, so a second callback arriving a
     // millisecond later sees "already clocked in" and stops.
@@ -351,6 +364,7 @@ class ShopFence {
       insideGeofence: true,
       mechanism: why,
     );
+    await PunchQueue.markPunched('in');
     // AFTER the punch is safely queued, never before.
     await Notify.punch(direction: 'in', at: at, mechanism: why);
     await Presence.ping(
@@ -382,6 +396,17 @@ class ShopFence {
       return;
     }
 
+    if (await PunchQueue.tooSoonFor('out')) {
+      await Presence.ping(
+        insideGeofence: false,
+        insideWifi: wifi,
+        lat: lat,
+        lon: lon,
+        reason: '$why-suppressed-repeat',
+        appState: 'blocked a repeat clock-out within 10 min',
+      );
+      return;
+    }
     final at = DateTime.now();
     await PunchQueue.setClockedIn(false);
     await PunchQueue.add(
@@ -393,6 +418,7 @@ class ShopFence {
       insideGeofence: false,
       mechanism: why,
     );
+    await PunchQueue.markPunched('out');
     // AFTER the punch is safely queued, never before.
     await Notify.punch(direction: 'out', at: at, mechanism: why);
     await Presence.ping(

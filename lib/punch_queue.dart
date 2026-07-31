@@ -176,12 +176,58 @@ class PunchQueue {
           .order('event_time', ascending: false)
           .limit(1);
 
-      // No punches at all means never clocked in — that is a real answer.
-      final onClock =
-          rows.isNotEmpty && (rows.first as Map)['direction'] == 'in';
-      await setClockedIn(onClock);
+      // AN EMPTY RESULT IS NOT EVIDENCE. LEAVE THE FLAG ALONE.
+      //
+      // This line used to read "no punches at all means never clocked in —
+      // that is a real answer", and set the flag to false. On 31 July that
+      // clocked Kent in THIRTY-THREE times in one day.
+      //
+      // The read comes back empty for several reasons that have nothing to do
+      // with the person's actual state: a permissions rule on punch_events, a
+      // query error, or — exactly what happened — a wiped database and a fresh
+      // employee ID after a clean start. Each time the read returned nothing,
+      // the app concluded "not clocked in", the periodic check saw the shop
+      // 15 m away, and it clocked in again. Every quarter of an hour.
+      //
+      // "I could not see any punches" is not "there are no punches". That
+      // distinction is the entire point of this project and I wrote a comment
+      // asserting the opposite without ever testing the empty case.
+      //
+      // So: only ever CORRECT the flag from a punch we actually read. Never
+      // clear it from silence.
+      if (rows.isEmpty) return;
+      await setClockedIn((rows.first as Map)['direction'] == 'in');
     } catch (_) {
       // Could not ask. Leave the flag alone.
     }
+  }
+
+  // --- Runaway guard ---------------------------------------------------------
+  //
+  // A hard cap on how often the same direction can be written, whatever the
+  // cause. The sync bug above is fixed, but 33 identical punches got written
+  // before anyone noticed, and the only reason it was not worse is that a
+  // unique index happened to be in the way.
+  //
+  // Any single fault should cost one wrong punch, not a day of them. This
+  // stops the bleeding regardless of which mistake causes it next time.
+  static const _lastKey = 'last_punch_';
+  static const Duration _minGap = Duration(minutes: 10);
+
+  /// True if we already wrote this direction within the last few minutes.
+  static Future<bool> tooSoonFor(String direction) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    final ms = prefs.getInt('$_lastKey$direction');
+    if (ms == null) return false;
+    final since =
+        DateTime.now().difference(DateTime.fromMillisecondsSinceEpoch(ms));
+    return since < _minGap && !since.isNegative;
+  }
+
+  static Future<void> markPunched(String direction) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(
+        '$_lastKey$direction', DateTime.now().millisecondsSinceEpoch);
   }
 }
