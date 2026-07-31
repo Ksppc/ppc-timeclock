@@ -283,12 +283,27 @@ jobs:
           # existing one — Gradle is happy to have the extension configured
           # twice, and a regex reaching into a generated block is exactly the
           # kind of brittle patching that has bitten this workflow before.
+          # Java AND Kotlin both pinned to 17, together.
+          #
+          # The first attempt set only the Java side, to 11, and the build died
+          # with "Inconsistent JVM-target compatibility detected for tasks
+          # compileDebugJavaWithJavac (11) and compileDebugKotlin (17)". The
+          # Flutter scaffold's Kotlin was already on 17; hardcoding Java to 11
+          # underneath it created a mismatch that did not exist before we
+          # touched anything.
+          #
+          # Lesson worth keeping: when you append a config block, you are not
+          # only adding your setting — you are overriding whatever was there.
+          # Set both halves of a matched pair, or set neither.
           desugar_kts = (
             "\n\nandroid {\n"
             "    compileOptions {\n"
             "        isCoreLibraryDesugaringEnabled = true\n"
-            "        sourceCompatibility = JavaVersion.VERSION_11\n"
-            "        targetCompatibility = JavaVersion.VERSION_11\n"
+            "        sourceCompatibility = JavaVersion.VERSION_17\n"
+            "        targetCompatibility = JavaVersion.VERSION_17\n"
+            "    }\n"
+            "    kotlinOptions {\n"
+            "        jvmTarget = JavaVersion.VERSION_17.toString()\n"
             "    }\n"
             "}\n\n"
             "dependencies {\n"
@@ -299,8 +314,11 @@ jobs:
             "\n\nandroid {\n"
             "    compileOptions {\n"
             "        coreLibraryDesugaringEnabled true\n"
-            "        sourceCompatibility JavaVersion.VERSION_11\n"
-            "        targetCompatibility JavaVersion.VERSION_11\n"
+            "        sourceCompatibility JavaVersion.VERSION_17\n"
+            "        targetCompatibility JavaVersion.VERSION_17\n"
+            "    }\n"
+            "    kotlinOptions {\n"
+            "        jvmTarget = '17'\n"
             "    }\n"
             "}\n\n"
             "dependencies {\n"
