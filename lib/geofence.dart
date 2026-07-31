@@ -7,6 +7,7 @@ import 'package:native_geofence/native_geofence.dart' as ng;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide Presence;
 import 'config.dart';
+import 'notify.dart';
 import 'punch_queue.dart';
 import 'presence.dart';
 
@@ -333,6 +334,7 @@ class ShopFence {
   static Future<void> recordArrival(
       {double? lat, double? lon, double? accuracy, required String why}) async {
     if (await PunchQueue.isClockedIn()) return; // already on the clock
+    final at = DateTime.now();
     // Flip the state BEFORE writing, so a second callback arriving a
     // millisecond later sees "already clocked in" and stops.
     await PunchQueue.setClockedIn(true);
@@ -345,10 +347,12 @@ class ShopFence {
       lat: lat,
       lon: lon,
       accuracy: accuracy,
-      crossedAt: DateTime.now(),
+      crossedAt: at,
       insideGeofence: true,
       mechanism: why,
     );
+    // AFTER the punch is safely queued, never before.
+    await Notify.punch(direction: 'in', at: at, mechanism: why);
     await Presence.ping(
       insideGeofence: true,
       insideWifi: await Presence.onShopWifi(_wifiSsid),
@@ -378,16 +382,19 @@ class ShopFence {
       return;
     }
 
+    final at = DateTime.now();
     await PunchQueue.setClockedIn(false);
     await PunchQueue.add(
       direction: 'out',
       lat: lat,
       lon: lon,
       accuracy: accuracy,
-      crossedAt: DateTime.now(),
+      crossedAt: at,
       insideGeofence: false,
       mechanism: why,
     );
+    // AFTER the punch is safely queued, never before.
+    await Notify.punch(direction: 'out', at: at, mechanism: why);
     await Presence.ping(
       insideGeofence: false,
       insideWifi: wifi,
@@ -473,7 +480,22 @@ class ShopFence {
       final acc = pos.accuracy;
       final usable = acc > 0 && acc <= _usableAccuracyM;
 
-      final inside = metres <= _radiusIn || wifi == true;
+      // Arrivals need a usable fix too.
+      //
+      // This gate was missing until 30 July, and its absence was a real hole:
+      // departures were carefully guarded — a fix has to clear the ring by more
+      // than its own error before it can end a shift — while arrivals accepted
+      // any reading at all. A fix carrying 500 m of error that happens to
+      // compute as 140 m from the shop is not evidence that anyone is at the
+      // shop, and it would have started a shift.
+      //
+      // Connecteam discards anything worse than 300 m in both directions for
+      // the same reason. Guarding only the frightening direction is not
+      // caution, it is an oversight wearing caution's clothes.
+      //
+      // Wi-Fi still overrides: being joined to the shop network is its own
+      // evidence and does not depend on GPS at all.
+      final inside = (usable && metres <= _radiusIn) || wifi == true;
       // Outside even if this fix is as wrong as it admits it might be.
       final clearlyOutside =
           usable && wifi != true && (metres - acc) > _radiusOut;
