@@ -172,6 +172,23 @@
     <div style="padding:10px 16px"><span class="note" style="margin:0">The question that matters is whether <b>Android is still watching the shop boundary</b> for each phone &mdash; that is the "Shop fence" column. The app itself is meant to be closed almost all the time now, so a quiet phone is normal and is no longer treated as a fault. A phone whose fence is missing will not record hours: have them open the app and tap <b>Re-arm</b>.</span></div>
   </div>
 
+  <!-- Reports from the crew. Hidden when there are none, loud when there are.
+       A report never changes hours by itself — the phone runs on the public
+       key and cannot prove who is holding it, so these are claims, and claims
+       get reviewed. Accepting one does not edit the day either: it clears the
+       flag and points you at the day to fix in "Needs review". -->
+  <div class="card hide" id="dispCard" style="margin-bottom:22px;border-color:rgba(31,78,140,.45);box-shadow:0 4px 16px rgba(31,78,140,.12)">
+    <div class="card-h" style="background:rgba(31,78,140,.08)">
+      <h2 style="color:#1f4e8c">Reported by the crew</h2>
+      <span class="count" id="dispCount">0</span>
+    </div>
+    <div style="overflow-x:auto"><table>
+      <thead><tr><th>Employee</th><th>Day</th><th>What they said</th><th>They say</th><th>System says</th><th></th></tr></thead>
+      <tbody id="dispBody"></tbody>
+    </table></div>
+    <div style="padding:10px 16px"><span class="note" style="margin:0">Sent from the app by the person themselves. Nothing here has changed any hours &mdash; fix the day under "Needs review" or by editing the timesheet, then mark the report handled.</span></div>
+  </div>
+
   <div class="card hide" id="staleCard" style="margin-bottom:22px;border-color:rgba(181,114,0,.45);box-shadow:0 4px 16px rgba(181,114,0,.12)">
     <div class="card-h" style="background:rgba(181,114,0,.08)">
       <h2 style="color:#b57200">Still clocked in</h2>
@@ -373,7 +390,17 @@
     const r=await fetch(`${SUPABASE_URL}/rest/v1/${path}`,{method,
       headers:await authHeaders({'Content-Type':'application/json',Prefer:'return=representation'}),
       body:body?JSON.stringify(body):undefined});
-    if(!r.ok) throw new Error(`${r.status} ${await r.text()}`);
+    if(!r.ok){
+      // An expired session is invisible on this page unless we say so.
+      // Several tables (zone_config among them) allow anonymous READS, so the
+      // dashboard keeps loading data and looking perfectly healthy long after
+      // the login has lapsed — while every single write is refused. That is a
+      // horrible thing to debug and an easy thing to explain, so explain it.
+      if(r.status===401||r.status===403){
+        throw new Error('your sign-in has expired. Sign out and back in, then try again.');
+      }
+      throw new Error(`${r.status} ${await r.text()}`);
+    }
     return r.status===204?null:r.json();
   }
 
@@ -615,6 +642,54 @@
     }
   }
 
+  // ---- Reports from the crew ------------------------------------------------
+  async function renderDisputes(){
+    try{
+      const rows=await rest('v_open_disputes?select=*');
+      $('dispCount').textContent=rows.length;
+      if(!rows.length){ $('dispCard').classList.add('hide'); return; }
+      $('dispCard').classList.remove('hide');
+      $('dispBody').innerHTML=rows.map((d,i)=>{
+        const claim=(d.claimed_in||d.claimed_out)
+          ? `${d.claimed_in?d.claimed_in.slice(0,5):'?'} &rarr; ${d.claimed_out?d.claimed_out.slice(0,5):'?'}`
+          : '<span style="color:var(--muted)">not stated</span>';
+        const sys=(d.system_in||d.system_out)
+          ? `${d.system_in?hm(d.system_in):'?'} &rarr; ${d.system_out?hm(d.system_out):'?'}`
+             + (d.system_hours!=null?` <span style="color:var(--muted)">(${(+d.system_hours).toFixed(2)} h)</span>`:'')
+          : '<span style="color:var(--red)">no record</span>';
+        return `<tr>
+          <td><div class="nm-cell">${av(d.full_name,i)}<span class="name">${d.full_name}</span></div></td>
+          <td class="num">${d.work_date}</td>
+          <td style="max-width:320px;white-space:normal">${esc(d.note)}</td>
+          <td class="num">${claim}</td>
+          <td class="num">${sys}</td>
+          <td><button class="btn" data-disp="${d.id}">Mark handled</button></td>
+        </tr>`;
+      }).join('');
+      document.querySelectorAll('[data-disp]').forEach(b=>{
+        b.onclick=async()=>{
+          b.disabled=true;
+          try{
+            await writeRest('PATCH',`punch_disputes?id=eq.${b.dataset.disp}`,
+              {status:'accepted',resolved_at:new Date().toISOString()});
+            toast('Report marked handled'); await renderDisputes();
+          }catch(e){ b.disabled=false; toast('Could not update: '+e.message); }
+        };
+      });
+    }catch(e){
+      // Table missing = backend/punch-disputes.sql hasn't been run yet.
+      $('dispCard').classList.add('hide');
+    }
+  }
+
+  // Crew-entered free text goes into the page, so it gets escaped. Nobody here
+  // is an attacker, but an apostrophe or a < in "I was <10 min late" should not
+  // be able to break the table either.
+  function esc(s){
+    return String(s==null?'':s).replace(/[&<>"']/g,
+      c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
   async function renderStale(){
     try{
       const limit=(SET&&+SET.max_open_hours)||14;
@@ -785,6 +860,7 @@
       $('kReview').textContent=review;
       renderReview(flagged, empById);
       await renderStale();
+      await renderDisputes();
       await renderHealth(empById);
       // Weekly (Sun→Sat) reconciliation: regular hours over 40 in a week become
       // OT. The 40 is measured on regular time only (daily OT doesn't count).
