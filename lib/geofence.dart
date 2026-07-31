@@ -4,6 +4,7 @@ import 'package:geolocator/geolocator.dart' as geo;
 // The native package also exports a class called `Geofence`, so it is always
 // prefixed. Learned from the `Presence` collision that cost three builds.
 import 'package:native_geofence/native_geofence.dart' as ng;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide Presence;
 import 'config.dart';
 import 'punch_queue.dart';
@@ -86,7 +87,10 @@ Future<void> shopFenceTriggered(ng.GeofenceCallbackParams params) async {
     await ShopFence.ensureSupabase();
 
     final ids = params.geofences.map((g) => g.id).toSet();
-    final entering = params.event == ng.GeofenceEvent.enter &&
+    // Dwell counts as arriving. It is the same news, delivered late by a fence
+    // that was not confident enough at the moment of crossing.
+    final entering = (params.event == ng.GeofenceEvent.enter ||
+            params.event == ng.GeofenceEvent.dwell) &&
         ids.contains(kFenceIn);
     final leaving = params.event == ng.GeofenceEvent.exit &&
         ids.contains(kFenceOut);
@@ -214,12 +218,21 @@ class ShopFence {
         id: kFenceIn,
         location: loc,
         radiusMeters: _radiusIn,
-        triggers: {ng.GeofenceEvent.enter},
+        // DWELL as well as ENTER, on Google's own advice. Dwell fires once
+        // someone has settled inside for the loitering delay rather than only
+        // at the instant of crossing, which gives a second chance at an arrival
+        // the enter transition fumbled — and arriving is the half that went
+        // missing after lunch on 30 July.
+        triggers: {ng.GeofenceEvent.enter, ng.GeofenceEvent.dwell},
         iosSettings: ng.IosGeofenceSettings(initialTrigger: true),
         androidSettings: ng.AndroidGeofenceSettings(
           initialTriggers: {ng.GeofenceEvent.enter},
-          // Payroll wants promptness over battery. This asks Android to notice
-          // sooner rather than batching for power saving.
+          // Someone who is still here two minutes later is here.
+          loiteringDelay: const Duration(minutes: 2),
+          // Payroll wants promptness over battery. Note Google's caveat: a low
+          // value is a request, not a promise. Their documented latency is 2-3
+          // minutes typically and up to 6 if the phone has been sitting still —
+          // which is exactly why the periodic check now backs this up.
           notificationResponsiveness: const Duration(minutes: 1),
         ),
       ),
@@ -290,6 +303,31 @@ class ShopFence {
   }
 
   // ---------------------------------------------------------------------------
+  //  A NOTE ON TRUSTING THE EVENT LOCATION, 29 July 2026
+  //
+  //  A test run produced two punches 96 seconds apart: ENTER at the shop, then
+  //  EXIT carrying coordinates 11.5 km away at the person's house. The first
+  //  reading of that here was "Android handed us a stale fix and ended a shift
+  //  14 minutes early", and a whole verify-with-a-fresh-fix layer was written
+  //  to defend against it.
+  //
+  //  It was wrong. The test used a mock-location app; when its route finished
+  //  the mock switched off and the phone snapped back to its real position.
+  //  Android was correct on both events. There was no bug.
+  //
+  //  The defensive layer was then deleted rather than shipped, because it
+  //  spent five to eight seconds of a ten-second callback budget on a GPS read
+  //  in order to guard against something that had not been shown to happen —
+  //  trading a real risk (callback killed, punch never written) for an
+  //  imaginary one. If a genuine stale-location case ever turns up in the
+  //  trail, it is in the git history and can come back with evidence behind it.
+  //
+  //  Recorded because the wrong conclusion was reached first, from coordinates
+  //  alone, without knowing how the test had been run. Data does not interpret
+  //  itself.
+  // ---------------------------------------------------------------------------
+
+  // ---------------------------------------------------------------------------
   //  PUNCHES
   // ---------------------------------------------------------------------------
   static Future<void> recordArrival(
@@ -309,6 +347,7 @@ class ShopFence {
       accuracy: accuracy,
       crossedAt: DateTime.now(),
       insideGeofence: true,
+      mechanism: why,
     );
     await Presence.ping(
       insideGeofence: true,
@@ -347,6 +386,7 @@ class ShopFence {
       accuracy: accuracy,
       crossedAt: DateTime.now(),
       insideGeofence: false,
+      mechanism: why,
     );
     await Presence.ping(
       insideGeofence: false,
@@ -361,32 +401,89 @@ class ShopFence {
   // ---------------------------------------------------------------------------
   //  BACKSTOP
   // ---------------------------------------------------------------------------
+  /// How many consecutive checks have seen the person CLEARLY off site.
+  /// Persisted, because each periodic run is a fresh isolate with no memory.
+  static const _awayKey = 'consecutive_away_checks';
+
+  /// A fix worse than this tells us nothing useful about which side of a
+  /// 150/250 m boundary someone is standing on.
+  static const double _usableAccuracyM = 100;
+
+  /// Two agreeing checks, roughly fifteen minutes apart, before a shift ends.
+  static const int _awayChecksNeeded = 2;
+
   /// Read the current position and make the clock agree with reality.
   ///
   /// Runs whether or not we think we are on the clock: arriving unnoticed costs
   /// someone their morning, leaving unnoticed costs them their afternoon.
   ///
-  /// It will clock someone IN if it finds them at the shop, but never OUT — a
-  /// single stray fix must not end a shift. Departures belong to the fence, and
-  /// failing that to the server reading this ping trail.
+  /// PROMOTED 30 July 2026 — this may now end a shift, not just start one.
+  ///
+  /// It used to clock people IN but never OUT, on the reasoning that a single
+  /// stray fix must not cost someone their afternoon. That reasoning was right;
+  /// the conclusion was too strong. Google's own geofencing guidance says an
+  /// alert can take up to six minutes when a device has been sitting still, and
+  /// that the service leans on network location rather than GPS. A lunch run is
+  /// shorter than that window, so on 30 July both the leaving and the returning
+  /// went unseen by the fence. Making the fence the only thing allowed to end a
+  /// shift means short trips are simply lost.
+  ///
+  /// So this can end one — but it has to earn it three times over:
+  ///
+  ///   1. The fix must be usable at all. Worse than 100 m and we say nothing.
+  ///   2. The distance must clear the exit ring BY MORE THAN THE ACCURACY, so
+  ///      the person is outside even in the fix's own worst case. "Outside if
+  ///      this reading happens to be perfect" is not evidence.
+  ///   3. Two consecutive checks must agree, about fifteen minutes apart. One
+  ///      bad reading proves nothing; two, half an hour apart, both clearly off
+  ///      site, is a departure.
+  ///
+  /// A reading that puts them back on site resets the count immediately. An
+  /// ambiguous reading — poor accuracy, or in the band between the rings —
+  /// leaves the count alone, because no evidence is not counter-evidence.
+  ///
+  /// The cost when the fence DID work is nothing: the fence gets there first.
+  /// The cost when it didn't is up to fifteen minutes of imprecision, against a
+  /// whole afternoon under the old behaviour.
   static Future<void> recheck({required String reason}) async {
     await PunchQueue.flush();
     await Presence.flush();
 
+    // The database is the truth; this flag is a cache of it. Do this before
+    // deciding anything, or we repeat 30 July — an app that can see the shop
+    // in front of it and still refuses to clock in.
+    await PunchQueue.syncClockedInFromServer();
+
     final wifi = await Presence.onShopWifi(_wifiSsid);
     final clockedIn = await PunchQueue.isClockedIn();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.reload();
+    var away = prefs.getInt(_awayKey) ?? 0;
 
     try {
       final pos = await geo.Geolocator.getCurrentPosition(
-        locationSettings: geo.LocationSettings(
-          accuracy: clockedIn
-              ? geo.LocationAccuracy.high
-              : geo.LocationAccuracy.medium,
-          timeLimit: const Duration(seconds: 30),
+        locationSettings: const geo.LocationSettings(
+          // Always high now. This reading may end someone's shift, so it is
+          // worth the battery — and it runs four times an hour, not always.
+          accuracy: geo.LocationAccuracy.high,
+          timeLimit: Duration(seconds: 30),
         ),
       );
       final metres = distanceM(pos.latitude, pos.longitude, _lat, _lon);
+      final acc = pos.accuracy;
+      final usable = acc > 0 && acc <= _usableAccuracyM;
+
       final inside = metres <= _radiusIn || wifi == true;
+      // Outside even if this fix is as wrong as it admits it might be.
+      final clearlyOutside =
+          usable && wifi != true && (metres - acc) > _radiusOut;
+
+      if (inside) {
+        away = 0;
+      } else if (clearlyOutside) {
+        away += 1;
+      }
+      await prefs.setInt(_awayKey, away);
 
       await Presence.ping(
         insideGeofence: metres <= _radiusOut,
@@ -395,7 +492,8 @@ class ShopFence {
         lon: pos.longitude,
         accuracy: pos.accuracy,
         reason: reason,
-        appState: await describeState(),
+        appState: '${await describeState()} '
+            'd=${metres.round()} acc=${acc.round()} away=$away',
       );
 
       if (inside && !clockedIn) {
@@ -404,6 +502,15 @@ class ShopFence {
             lon: pos.longitude,
             accuracy: pos.accuracy,
             why: '$reason-arrival');
+      } else if (clockedIn && away >= _awayChecksNeeded) {
+        // Two agreeing checks. End the shift, and reset so a later return
+        // starts the count fresh.
+        await prefs.setInt(_awayKey, 0);
+        await recordDeparture(
+            lat: pos.latitude,
+            lon: pos.longitude,
+            accuracy: pos.accuracy,
+            why: '$reason-departure');
       }
     } catch (_) {
       if (wifi != null) {

@@ -32,6 +32,11 @@ class PunchQueue {
     double? accuracy,
     required DateTime crossedAt,
     bool insideGeofence = true,
+    // Which layer caught this crossing — 'fence-enter', 'fetch-departure',
+    // 'app-opened-arrival'. Rides along in device_id so the dashboard can show
+    // it without a schema change. If fences quietly stop working on one
+    // handset, this is what makes it visible before payroll does.
+    String mechanism = 'unknown',
   }) async {
     final row = {
       'employee_id': await Identity.effectiveId(),
@@ -42,7 +47,7 @@ class PunchQueue {
       'gps_accuracy_m': accuracy,
       'source': 'gps',
       'inside_geofence': insideGeofence,
-      'device_id': 'android-beta',
+      'device_id': 'android:$mechanism',
     };
     final prefs = await SharedPreferences.getInstance();
     final list = prefs.getStringList(_key) ?? [];
@@ -131,5 +136,52 @@ class PunchQueue {
   static Future<void> setClockedIn(bool v) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_clockedKey, v);
+  }
+
+  /// Make the phone's idea of "on the clock" agree with the database.
+  ///
+  /// WHY THIS EXISTS
+  /// ---------------
+  /// 30 July 2026. The server-side reconciler closed a shift at 12:49 after a
+  /// lunch trip and wrote the clock-out straight into punch_events. It never
+  /// told the phone. The phone only clears this flag when the PHONE writes a
+  /// clock-out, so it spent the whole afternoon believing a shift was still
+  /// open — and recordArrival() begins with "if already clocked in, do
+  /// nothing". Every fifteen minutes the app woke, correctly saw itself at the
+  /// shop, correctly decided a clock-in was needed, and declined.
+  ///
+  /// The phone was right about the world and wrong about itself.
+  ///
+  /// So: the database is the source of truth and this flag is a cache of it.
+  /// Anything that can change the truth — the reconciler, an admin editing a
+  /// day, a punch from another install — now heals itself within one check
+  /// instead of silently wedging the app.
+  ///
+  /// Two things it deliberately will NOT do:
+  ///   - It does not run while punches are still queued locally. Those have not
+  ///     reached the server yet, so the server's answer is out of date and
+  ///     trusting it would erase them.
+  ///   - It does not touch the flag if the query fails. Offline is not
+  ///     evidence of anything.
+  static Future<void> syncClockedInFromServer() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.reload();
+      if ((prefs.getStringList(_key) ?? []).isNotEmpty) return; // unsent work
+
+      final rows = await Supabase.instance.client
+          .from('punch_events')
+          .select('direction')
+          .eq('employee_id', await Identity.effectiveId())
+          .order('event_time', ascending: false)
+          .limit(1);
+
+      // No punches at all means never clocked in — that is a real answer.
+      final onClock =
+          rows.isNotEmpty && (rows.first as Map)['direction'] == 'in';
+      await setClockedIn(onClock);
+    } catch (_) {
+      // Could not ask. Leave the flag alone.
+    }
   }
 }

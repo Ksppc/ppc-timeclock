@@ -328,10 +328,50 @@ class _HomeScreenState extends State<HomeScreen> {
       },
     ));
 
-    // 7. Shop Wi-Fi — the backup presence signal. NEVER a blocker.
+    // 7. WI-FI SWITCHED ON. Not the shop network — the radio itself.
+    //
+    //    This row exists because of a line in Google's geofencing
+    //    troubleshooting guide that we had never read:
+    //
+    //      "Wi-Fi is turned off on the device. Having Wi-Fi on can
+    //       significantly improve the location accuracy, so if Wi-Fi is turned
+    //       off, your application MIGHT NEVER GET GEOFENCE ALERTS."
+    //
+    //    And, from the same page: "On most devices, the geofence service uses
+    //    only network location for geofence triggering." Not GPS — cell towers
+    //    and Wi-Fi scanning. So someone who switches Wi-Fi off to save battery
+    //    can end up with a phone that records nothing, while every other row on
+    //    this screen sits there green. That is the exact silent failure this
+    //    whole project exists to prevent.
+    //
+    //    We can only detect it one way round: seeing a network name proves the
+    //    radio is on. Not seeing one means either off or simply not connected,
+    //    and we don't guess between those — we just say what would fix it.
+    final nowOn = await Presence.currentSsid();
+    final wifiRadioSeen = nowOn != null;
+    out.add(_Check(
+      'Leave Wi-Fi switched on',
+      wifiRadioSeen
+          ? 'Wi-Fi is on. Good — the shop fence relies on it.'
+          : 'Wi-Fi looks switched off, or is not connected to anything.\n\n'
+              'Android works out the shop boundary using nearby Wi-Fi signals, '
+              'not GPS. With Wi-Fi off your hours may not record at all. Leave '
+              'it on even when you are away from the shop — it does not need to '
+              'be connected to anything, it just needs to be on.',
+      // Amber, never red. We cannot tell "Wi-Fi off" from "Wi-Fi on but not
+      // joined to anything", and a crew member driving between sites has the
+      // second one all day. Flagging that red would put a false alarm on the
+      // screen every afternoon, and a checklist that cries wolf is one people
+      // stop reading — which is how the last Wi-Fi row went wrong.
+      ok: true,
+      warn: !wifiRadioSeen,
+      fixLabel: wifiRadioSeen ? null : 'Open settings',
+      fix: wifiRadioSeen ? null : () async => ph.openAppSettings(),
+    ));
+
+    // 8. Shop Wi-Fi network — the backup presence signal. NEVER a blocker.
     final ssid = ShopFence.wifiSsid;
     final onWifi = await Presence.onShopWifi(ssid);
-    final nowOn = await Presence.currentSsid();
     final youAreOn = nowOn == null
         ? 'This phone is not on Wi-Fi right now.'
         : 'This phone is on: $nowOn';

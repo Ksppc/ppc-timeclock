@@ -19,16 +19,26 @@ class Config {
   static const double zoneLon = -113.357603;
 
   /// Enter this radius -> clock in.
-  static const double clockInRadiusM = 100;
+  ///
+  /// 150 m, not 100. Google's geofencing guidance: "For best results, the
+  /// minimum radius of the geofence should be set between 100-150 metres...
+  /// assume that Wi-Fi location accuracy is about 50 metres." We were sitting
+  /// on the absolute floor of that range while relying on it inside a steel
+  /// building, where the geofence service uses network location rather than
+  /// GPS. A tight fence is not a more accurate fence — it is one that fires
+  /// less often.
+  static const double clockInRadiusM = 150;
 
   /// Leave THIS radius -> clock out. Deliberately larger than the clock-in
   /// radius: the band between the two is what stops GPS jitter at the boundary
   /// punching someone in and out all day.
   ///
   /// Android's own guidance is to use a radius of at least 100 m, and to expect
-  /// larger radii to be more reliable. 200 m costs a few seconds of paid time
-  /// while driving off the property and buys a materially more dependable exit.
-  static const double clockOutRadiusM = 200;
+  /// larger radii to be more reliable. Widened to 250 m alongside the 150 m
+  /// clock-in ring, to keep the same 100 m hysteresis band between them — that
+  /// band is what stops jitter at the boundary punching someone in and out all
+  /// day, and it has to grow when the inner ring does.
+  static const double clockOutRadiusM = 250;
 
   /// Shop Wi-Fi network. A phone joined to this SSID counts as on site even
   /// when GPS is useless indoors. Empty string = GPS only.
