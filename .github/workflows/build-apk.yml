@@ -271,6 +271,53 @@ jobs:
               open("android/build.gradle", "a", encoding="utf-8").write(gr_block)
               print("appended subprojects compileSdk override (groovy)")
 
+          # CORE LIBRARY DESUGARING — required by flutter_local_notifications.
+          #
+          # Without it the build dies at :app:checkDebugAarMetadata with
+          # "Dependency ':flutter_local_notifications' requires core library
+          # desugaring to be enabled for :app". Desugaring backports newer Java
+          # APIs (java.time, mostly) so they run on older Android; the
+          # notifications plugin schedules against them.
+          #
+          # Appended as a second android{} block rather than edited into the
+          # existing one — Gradle is happy to have the extension configured
+          # twice, and a regex reaching into a generated block is exactly the
+          # kind of brittle patching that has bitten this workflow before.
+          desugar_kts = (
+            "\n\nandroid {\n"
+            "    compileOptions {\n"
+            "        isCoreLibraryDesugaringEnabled = true\n"
+            "        sourceCompatibility = JavaVersion.VERSION_11\n"
+            "        targetCompatibility = JavaVersion.VERSION_11\n"
+            "    }\n"
+            "}\n\n"
+            "dependencies {\n"
+            "    coreLibraryDesugaring(\"com.android.tools:desugar_jdk_libs:2.1.4\")\n"
+            "}\n"
+          )
+          desugar_groovy = (
+            "\n\nandroid {\n"
+            "    compileOptions {\n"
+            "        coreLibraryDesugaringEnabled true\n"
+            "        sourceCompatibility JavaVersion.VERSION_11\n"
+            "        targetCompatibility JavaVersion.VERSION_11\n"
+            "    }\n"
+            "}\n\n"
+            "dependencies {\n"
+            "    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'\n"
+            "}\n"
+          )
+          if os.path.exists("android/app/build.gradle.kts"):
+            s = open("android/app/build.gradle.kts", encoding="utf-8").read()
+            if "coreLibraryDesugaring" not in s:
+              open("android/app/build.gradle.kts", "a", encoding="utf-8").write(desugar_kts)
+              print("enabled core library desugaring (kts)")
+          elif os.path.exists("android/app/build.gradle"):
+            s = open("android/app/build.gradle", encoding="utf-8").read()
+            if "coreLibraryDesugaring" not in s:
+              open("android/app/build.gradle", "a", encoding="utf-8").write(desugar_groovy)
+              print("enabled core library desugaring (groovy)")
+
           # Gradle 8+ is a native_geofence requirement. Report it rather than
           # silently building something that will fail obscurely later.
           wp = "android/gradle/wrapper/gradle-wrapper.properties"
