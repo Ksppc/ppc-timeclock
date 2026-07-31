@@ -186,7 +186,7 @@
       <thead><tr><th>Employee</th><th>Day</th><th>What they said</th><th>They say</th><th>System says</th><th>Put it right</th></tr></thead>
       <tbody id="dispBody"></tbody>
     </table></div>
-    <div style="padding:10px 16px"><span class="note" style="margin:0">Sent from the app by the person themselves &mdash; nothing here has changed any hours on its own. Type the correct paid hours and press <b>Fix day</b>: it sets the day, splits regular and overtime at 8, stamps it with your email, and closes the report in one go. It works on <b>any</b> day, not just the ones flagged for review, and will create the day if nothing was recorded at all. <b>No change</b> closes the report without touching the hours &mdash; for when they were mistaken, or you have already fixed it elsewhere.</span></div>
+    <div style="padding:10px 16px"><span class="note" style="margin:0">Sent from the app by the person themselves &mdash; nothing here has changed any hours on its own. The two time boxes are <b>started</b> and <b>finished</b>, already filled in with what they claimed (or what the system recorded, if they didn't say). Correct them if needed and press <b>Fix day</b>: it works out the hours &mdash; deducting lunch by your own rule, and handling a finish after midnight &mdash; sets the day, splits regular and overtime at 8, stamps it with your email, and closes the report in one go. It works on <b>any</b> day, not just ones flagged for review, and will create the day if nothing was recorded at all. <b>No change</b> closes the report without touching the hours, for when they were mistaken or you have already fixed it elsewhere.</span></div>
   </div>
 
   <div class="card hide" id="staleCard" style="margin-bottom:22px;border-color:rgba(181,114,0,.45);box-shadow:0 4px 16px rgba(181,114,0,.12)">
@@ -523,18 +523,47 @@
     }
   }
 
+  // "HH:MM" out of a timestamp, 24h, for prefilling a <input type="time">.
+  function hm24(ts){
+    try{
+      return new Intl.DateTimeFormat('en-GB',{timeZone:'America/Edmonton',
+        hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(ts));
+    }catch(_){ return ''; }
+  }
+
+  // Started/finished -> paid hours, applying the shop's own lunch rule.
+  //
+  // Asking an admin to convert "7:30 to 5" into "9.5" in their head, and
+  // remember to knock the lunch off, is pushing arithmetic onto the person at
+  // the exact moment they are trying to be accurate about someone's pay. The
+  // times are what the crew member reports and what the admin knows; the hours
+  // are a derived number, so derive them — using the same lunch rule the engine
+  // uses, so a hand-fixed day and an auto-computed one agree.
+  function hoursFromTimes(inHHMM, outHHMM){
+    const m=s=>{ const p=String(s||'').split(':'); return (+p[0])*60+(+p[1]); };
+    if(!inHHMM||!outHHMM) return null;
+    let mins=m(outHHMM)-m(inHHMM);
+    if(mins<0) mins+=24*60;               // finished after midnight
+    const lunchMin=(SET&&+SET.lunch_deduct_minutes)||0;
+    const lunchAfter=(SET&&+SET.lunch_after_hours)||0;
+    if(lunchMin>0 && lunchAfter>0 && mins/60>lunchAfter) mins-=lunchMin;
+    return Math.max(0, +(mins/60).toFixed(2));
+  }
+
   // Fix the day a report is about, and close the report, in one action.
   async function fixFromDispute(id, employeeId, workDate){
-    const hours=$('dh_'+id).value.trim();
+    const hours=hoursFromTimes($('di_'+id).value, $('do_'+id).value);
+    if(hours===null){ toast('Enter the started and finished times'); return; }
     const note=($('dn_'+id).value.trim())
-      || `Corrected from crew report ${workDate}`;
+      || `Corrected from crew report ${workDate}: `
+         + `${$('di_'+id).value}-${$('do_'+id).value} = ${hours} h`;
     const btn=document.querySelector(`[data-fix="${id}"]`);
     if(btn) btn.disabled=true;
     try{
       await fixDay(employeeId, workDate, hours, note);
       await writeRest('PATCH',`punch_disputes?id=eq.${id}`,
         {status:'accepted', resolved_at:new Date().toISOString(), resolved_note:note});
-      toast('Day corrected and report closed');
+      toast(`Day set to ${hours} h and report closed`);
       load();
     }catch(e){
       if(btn) btn.disabled=false;
@@ -716,8 +745,11 @@
           <td class="num">${claim}</td>
           <td class="num">${sys}</td>
           <td style="white-space:nowrap">
-            <input class="f" id="dh_${d.id}" placeholder="hours" inputmode="decimal" style="width:74px">
-            <input class="f" id="dn_${d.id}" placeholder="note (optional)" style="width:150px">
+            <input class="f" id="di_${d.id}" type="time" title="Started"
+                   value="${d.claimed_in?d.claimed_in.slice(0,5):(d.system_in?hm24(d.system_in):'')}" style="width:104px">
+            <input class="f" id="do_${d.id}" type="time" title="Finished"
+                   value="${d.claimed_out?d.claimed_out.slice(0,5):(d.system_out?hm24(d.system_out):'')}" style="width:104px">
+            <input class="f" id="dn_${d.id}" placeholder="note (optional)" style="width:140px">
             <button class="btn primary" data-fix="${d.id}"
               onclick="fixFromDispute('${d.id}','${d.employee_id}','${d.work_date}')">Fix day</button>
             <button class="btn" data-disp="${d.id}">No change</button>
