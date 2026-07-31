@@ -194,7 +194,8 @@
     </div>
     <div class="card">
       <div class="card-h"><h2 id="todayTitle">Today's punches</h2><span class="count">GPS-verified</span></div>
-      <div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Time</th><th>Dir</th><th>Accuracy</th><th>Source</th></tr></thead><tbody id="punches"></tbody></table></div>
+      <div style="overflow-x:auto"><table><thead><tr><th>Employee</th><th>Time</th><th>Dir</th><th>Accuracy</th><th>Caught by</th></tr></thead><tbody id="punches"></tbody></table></div>
+      <div style="padding:10px 16px"><span class="note" style="margin:0"><b>Caught by</b> is which of the three layers noticed the crossing. <b>Shop fence</b> is the fast path &mdash; Android spotting the boundary itself. <b>15-min check</b> means the fence missed it and the periodic check picked it up. <b>Reconciled</b> means neither did, and the server rebuilt the punch from the position trail. All three are correct punches; the mix tells you whether a phone's fences are healthy. A phone that is always "15-min check" has a fence problem worth looking at.</span></div>
     </div>
   </div>
 
@@ -529,6 +530,20 @@
   // usually because location permission got knocked back to "while using the
   // app". Each ping carries the app's own answer in app_state ("fences=..."),
   // so we read it back rather than inferring it from outside.
+  // ---- Which layer caught a punch ------------------------------------------
+  // The phone stamps the mechanism into device_id as "android:fence-enter",
+  // "android:fetch-departure" and so on. Older punches predate that and just
+  // say "android-beta"; they show as unknown rather than being guessed at.
+  function caughtBy(p){
+    if(p.source==='reconciled') return '<span class="chip warn">reconciled</span>';
+    if(p.source==='manual'||p.source==='admin-entry') return '<span class="chip">by hand</span>';
+    const m=(p.device_id||'');
+    if(m.indexOf('fence')>=0)  return '<span class="chip ok">shop fence</span>';
+    if(m.indexOf('fetch')>=0)  return '<span class="chip warn">15-min check</span>';
+    if(m.indexOf('app-opened')>=0) return '<span class="chip warn">app opened</span>';
+    return '<span style="color:var(--muted)">&mdash;</span>';
+  }
+
   async function renderHealth(empById){
     try{
       const edFmt=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Edmonton'});
@@ -736,7 +751,7 @@
       const edFmt=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Edmonton'});
       const today=edFmt.format(_now);
       const _since=new Date(_now.getTime()-48*3600*1000).toISOString();
-      const punches=(await rest(`punch_events?event_time=gte.${_since}&select=employee_id,event_time,direction,gps_accuracy_m,source&order=event_time.desc`))
+      const punches=(await rest(`punch_events?event_time=gte.${_since}&select=employee_id,event_time,direction,gps_accuracy_m,source,device_id&order=event_time.desc`))
         .filter(p=>edFmt.format(new Date(p.event_time))===today);
 
       const lastByEmp={};
@@ -752,7 +767,7 @@
       $('punches').innerHTML = punches.length? punches.map((p,i)=>{
         const e=empById[p.employee_id]||{full_name:'Unknown'};
         const dir = p.direction==='in'?'<span class="chip ok">● in</span>':'<span class="chip ser">▲ out</span>';
-        return `<tr><td><div class="nm-cell">${av(e.full_name,i)}<span class="name">${e.full_name}</span></div></td><td class="num">${hm(p.event_time)}</td><td>${dir}</td><td class="num">${p.gps_accuracy_m==null?'—':p.gps_accuracy_m+' m'}</td><td>${p.source}</td></tr>`;
+        return `<tr><td><div class="nm-cell">${av(e.full_name,i)}<span class="name">${e.full_name}</span></div></td><td class="num">${hm(p.event_time)}</td><td>${dir}</td><td class="num">${p.gps_accuracy_m==null?'—':p.gps_accuracy_m+' m'}</td><td>${caughtBy(p)}</td></tr>`;
       }).join('') : '<tr><td colspan="5" class="empty">No punches today yet.</td></tr>';
 
       const byEmp={}; let review=0; const flagged=[];
