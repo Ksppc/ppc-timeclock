@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart' as ph;
 import 'package:supabase_flutter/supabase_flutter.dart' hide Presence;
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'config.dart';
+import 'dispute.dart';
 import 'geofence.dart';
 import 'punch_queue.dart';
 import 'presence.dart';
@@ -416,6 +417,140 @@ class _HomeScreenState extends State<HomeScreen> {
     await _runChecks();
   }
 
+  // -------------------------------------------------------------------------
+  //  "Something's wrong with my hours"
+  //
+  //  The crew's way of raising a hand. It files a note for the admin and
+  //  changes nothing by itself — see dispute.dart for why that limit is real
+  //  rather than cautious.
+  //
+  //  Deliberately NOT a punch button. Giving people a way to clock themselves
+  //  in and out is the thing that quietly turns an automatic clock into a worse
+  //  honour system, because it is what everyone reaches for the moment the
+  //  fence is a minute slow.
+  // -------------------------------------------------------------------------
+  Future<void> _reportProblem() async {
+    final noteCtl = TextEditingController();
+    final inCtl = TextEditingController();
+    final outCtl = TextEditingController();
+    var forDate = DateTime.now();
+
+    final sent = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: const Text("Report a problem"),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'This sends a note to Kent. It does not change your hours by '
+                  'itself — he reviews it and fixes the day.',
+                  style: TextStyle(fontSize: 12.5, color: Colors.black54),
+                ),
+                const SizedBox(height: 14),
+                Row(
+                  children: [
+                    const Text('Which day?',
+                        style: TextStyle(fontWeight: FontWeight.w600)),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () async {
+                        final picked = await showDatePicker(
+                          context: ctx,
+                          initialDate: forDate,
+                          firstDate: DateTime.now()
+                              .subtract(const Duration(days: 45)),
+                          lastDate: DateTime.now(),
+                        );
+                        if (picked != null) setLocal(() => forDate = picked);
+                      },
+                      child: Text(
+                        '${forDate.year}-${forDate.month.toString().padLeft(2, '0')}-${forDate.day.toString().padLeft(2, '0')}',
+                        style: const TextStyle(fontWeight: FontWeight.bold),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 6),
+                TextField(
+                  controller: noteCtl,
+                  minLines: 3,
+                  maxLines: 5,
+                  textCapitalization: TextCapitalization.sentences,
+                  decoration: const InputDecoration(
+                    labelText: 'What happened?',
+                    hintText: 'e.g. I was here until 5 but it clocked me out '
+                        'at 2:40',
+                    border: OutlineInputBorder(),
+                  ),
+                ),
+                const SizedBox(height: 12),
+                const Text('If you know the right times (optional)',
+                    style: TextStyle(fontSize: 12, color: Colors.black54)),
+                const SizedBox(height: 6),
+                Row(
+                  children: [
+                    Expanded(
+                      child: TextField(
+                        controller: inCtl,
+                        decoration: const InputDecoration(
+                          labelText: 'Started',
+                          hintText: '07:30',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        controller: outCtl,
+                        decoration: const InputDecoration(
+                          labelText: 'Finished',
+                          hintText: '17:00',
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+                onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: _pblue),
+              onPressed: () async {
+                if (noteCtl.text.trim().isEmpty) return;
+                final ok = await Dispute.file(
+                  workDate: forDate,
+                  note: noteCtl.text,
+                  claimedIn: inCtl.text,
+                  claimedOut: outCtl.text,
+                );
+                if (ctx.mounted) Navigator.pop(ctx, ok);
+              },
+              child: const Text('Send'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (!mounted || sent == null) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      backgroundColor: sent ? _pgreen : _pred,
+      content: Text(sent
+          ? 'Sent. Kent will see it on the dashboard.'
+          : 'Could not send — no connection. Try again when you have signal.'),
+    ));
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -675,6 +810,35 @@ class _HomeScreenState extends State<HomeScreen> {
                         await _runChecks();
                       },
                       child: const Text('Send now'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 12),
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('Hours not right?',
+                      style: TextStyle(fontWeight: FontWeight.w600)),
+                  const SizedBox(height: 6),
+                  const Text(
+                    'Tell Kent rather than letting it go through wrong. You '
+                    'are the only one who knows what actually happened.',
+                    style: TextStyle(fontSize: 12.5, color: Colors.black54),
+                  ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    height: 34,
+                    child: OutlinedButton.icon(
+                      onPressed: _reportProblem,
+                      icon: const Icon(Icons.flag_outlined, size: 17),
+                      label: const Text('Report a problem'),
                     ),
                   ),
                 ],
