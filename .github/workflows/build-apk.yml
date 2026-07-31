@@ -271,18 +271,19 @@ jobs:
               open("android/build.gradle", "a", encoding="utf-8").write(gr_block)
               print("appended subprojects compileSdk override (groovy)")
 
-          # CORE LIBRARY DESUGARING — required by flutter_local_notifications.
+          # CORE LIBRARY DESUGARING — currently NOT applied, deliberately.
           #
-          # Without it the build dies at :app:checkDebugAarMetadata with
-          # "Dependency ':flutter_local_notifications' requires core library
-          # desugaring to be enabled for :app". Desugaring backports newer Java
-          # APIs (java.time, mostly) so they run on older Android; the
-          # notifications plugin schedules against them.
+          # This block existed for flutter_local_notifications, which requires
+          # desugaring and fails at :app:checkDebugAarMetadata without it. That
+          # package was removed the same night (see lib/notify.dart), and this
+          # is left switched off rather than deleted, because the next person to
+          # add a package needing desugaring will want it — along with the part
+          # that cost a build: pinning Java WITHOUT pinning Kotlin to match puts
+          # compileDebugJavaWithJavac and compileDebugKotlin on different JVM
+          # targets and the build dies. Set both, or set neither.
           #
-          # Appended as a second android{} block rather than edited into the
-          # existing one — Gradle is happy to have the extension configured
-          # twice, and a regex reaching into a generated block is exactly the
-          # kind of brittle patching that has bitten this workflow before.
+          # To re-enable: flip APPLY_DESUGARING to True.
+          APPLY_DESUGARING = True
           # Java AND Kotlin both pinned to 17, together.
           #
           # The first attempt set only the Java side, to 11, and the build died
@@ -295,15 +296,28 @@ jobs:
           # Lesson worth keeping: when you append a config block, you are not
           # only adding your setting — you are overriding whatever was there.
           # Set both halves of a matched pair, or set neither.
+          # MINIMAL ON PURPOSE. Enable the flag, add the library, touch nothing
+          # else. Two builds were lost learning why:
+          #
+          #   #58  the block also pinned sourceCompatibility/targetCompatibility
+          #        to Java 11. The Flutter scaffold is already on 17 for BOTH
+          #        Java and Kotlin, so this did not "set" anything — it
+          #        OVERRODE the Java half and left Kotlin at 17, producing
+          #        "Inconsistent JVM-target compatibility ... (11) and (17)".
+          #        The mismatch did not exist until we introduced it.
+          #
+          #   #59  the block then also added a kotlinOptions{} section. Inside
+          #        a SECOND android{} block appended to the end of the script,
+          #        that fails to resolve and the build dies during Gradle
+          #        configuration — which is why it failed in under three
+          #        minutes rather than during compilation.
+          #
+          # The lesson both times: an appended config block does not add to what
+          # is there, it replaces it. Change only what actually needs changing.
           desugar_kts = (
             "\n\nandroid {\n"
             "    compileOptions {\n"
             "        isCoreLibraryDesugaringEnabled = true\n"
-            "        sourceCompatibility = JavaVersion.VERSION_17\n"
-            "        targetCompatibility = JavaVersion.VERSION_17\n"
-            "    }\n"
-            "    kotlinOptions {\n"
-            "        jvmTarget = JavaVersion.VERSION_17.toString()\n"
             "    }\n"
             "}\n\n"
             "dependencies {\n"
@@ -314,27 +328,25 @@ jobs:
             "\n\nandroid {\n"
             "    compileOptions {\n"
             "        coreLibraryDesugaringEnabled true\n"
-            "        sourceCompatibility JavaVersion.VERSION_17\n"
-            "        targetCompatibility JavaVersion.VERSION_17\n"
-            "    }\n"
-            "    kotlinOptions {\n"
-            "        jvmTarget = '17'\n"
             "    }\n"
             "}\n\n"
             "dependencies {\n"
             "    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'\n"
             "}\n"
           )
-          if os.path.exists("android/app/build.gradle.kts"):
-            s = open("android/app/build.gradle.kts", encoding="utf-8").read()
-            if "coreLibraryDesugaring" not in s:
-              open("android/app/build.gradle.kts", "a", encoding="utf-8").write(desugar_kts)
-              print("enabled core library desugaring (kts)")
-          elif os.path.exists("android/app/build.gradle"):
-            s = open("android/app/build.gradle", encoding="utf-8").read()
-            if "coreLibraryDesugaring" not in s:
-              open("android/app/build.gradle", "a", encoding="utf-8").write(desugar_groovy)
-              print("enabled core library desugaring (groovy)")
+          if APPLY_DESUGARING:
+            if os.path.exists("android/app/build.gradle.kts"):
+              s = open("android/app/build.gradle.kts", encoding="utf-8").read()
+              if "coreLibraryDesugaring" not in s:
+                open("android/app/build.gradle.kts", "a", encoding="utf-8").write(desugar_kts)
+                print("enabled core library desugaring (kts)")
+            elif os.path.exists("android/app/build.gradle"):
+              s = open("android/app/build.gradle", encoding="utf-8").read()
+              if "coreLibraryDesugaring" not in s:
+                open("android/app/build.gradle", "a", encoding="utf-8").write(desugar_groovy)
+                print("enabled core library desugaring (groovy)")
+          else:
+            print("core library desugaring not needed, skipping")
 
           # Gradle 8+ is a native_geofence requirement. Report it rather than
           # silently building something that will fail obscurely later.
