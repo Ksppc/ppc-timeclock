@@ -1,7 +1,7 @@
 name: ppc_timeclock
 description: Paragon GPS Time Clock — silent geofence punch.
 publish_to: "none"
-version: 0.2.0+2
+version: 0.3.0+3
 
 environment:
   sdk: ">=3.3.0 <4.0.0"
@@ -50,13 +50,12 @@ dependencies:
   shared_preferences: ^2.2.0
   connectivity_plus: ^6.0.0
 
-  # Tells the person when they have been punched.
+  # Tells each person when they have been clocked in or out.
   #
-  # A wrong punch used to be found by the admin, in a payroll query, days later.
-  # Told at the moment it happens, it is found by the one person who knows what
-  # actually occurred, while they still remember. That is worth more than any
-  # amount of server-side cleverness — it turns the whole crew into error
-  # detectors instead of leaving one person auditing after the fact.
+  # Requires core library desugaring, which the build workflow enables. Getting
+  # that right means adding ONLY the desugaring flag and library — the Flutter
+  # scaffold already has Java and Kotlin consistently on 17, and overriding
+  # either half is what cost builds #58 and #59.
   flutter_local_notifications: ^17.2.2
 
   # Reads the connected Wi-Fi SSID. Second presence signal: inside a steel
