@@ -202,19 +202,43 @@ class PunchQueue {
     }
   }
 
-  // --- Runaway guard ---------------------------------------------------------
+  // --- Double-fire guard -----------------------------------------------------
   //
-  // A hard cap on how often the same direction can be written, whatever the
-  // cause. The sync bug above is fixed, but 33 identical punches got written
-  // before anyone noticed, and the only reason it was not worse is that a
-  // unique index happened to be in the way.
+  // WHAT THIS IS FOR, AND WHAT IT IS NOT FOR
+  // ----------------------------------------
+  // It catches the same crossing being written twice within seconds by two
+  // different isolates — the geofence callback and the app's own on-open check
+  // racing each other. That happened on 1 August: two clock-ins at 06:43, one
+  // 'fence-enter', one 'app-opened-arrival'.
   //
-  // Any single fault should cost one wrong punch, not a day of them. This
-  // stops the bleeding regardless of which mistake causes it next time.
+  // It was originally ten minutes, written the night of the 33-punch incident
+  // as a hard cap on runaway punching. Two things were wrong with that.
+  //
+  // First, it would not have stopped the incident it was written for. Those
+  // punches landed at 03:41, 04:01, 04:11 and 04:28 — gaps of twenty, ten and
+  // seventeen minutes. A ten-minute window catches almost none of them. The
+  // thing that actually fixed that bug is the `if (rows.isEmpty) return;` line
+  // in syncClockedInFromServer above; this was belt to a brace that was
+  // already holding.
+  //
+  // Second, it had a real cost. On 1 August a round trip out and back took
+  // eleven minutes and cleared this by sixty seconds. An eight-minute errand
+  // would have had its return punch silently discarded, leaving somebody
+  // reading as clocked-out while standing in the shop. That is the exact
+  // silent failure this project exists to prevent, introduced by a guard
+  // meant to prevent a different one.
+  //
+  // Two minutes. Long enough that no two isolates handling one crossing can
+  // both get through; short enough that no real trip is ever swallowed.
+  //
+  // HONEST LIMIT: two isolates that both read this flag before either writes
+  // it will both pass, no matter how short the window. A true simultaneous
+  // race needs the database unique index, not a clock. This narrows the
+  // window; it does not close it.
   static const _lastKey = 'last_punch_';
-  static const Duration _minGap = Duration(minutes: 10);
+  static const Duration _minGap = Duration(minutes: 2);
 
-  /// True if we already wrote this direction within the last few minutes.
+  /// True if we already wrote this direction within the last couple of minutes.
   static Future<bool> tooSoonFor(String direction) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.reload();
