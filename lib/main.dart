@@ -448,9 +448,17 @@ class _HomeScreenState extends State<HomeScreen> {
       });
     } catch (e) {
       if (!mounted) return;
+      // Tell the two failures apart. "Not registered" is a real answer that a
+      // person can act on — it means this handset is not the one bound to that
+      // name, which is what happens on a replacement phone. "Try again later"
+      // sent for that case would have somebody tapping a button forever.
+      final refused = e.toString().contains('not registered');
       setState(() {
         // Show the failure. A zero here would be believed.
-        _hoursError = 'Could not reach the server. Try again in a minute.';
+        _hoursError = refused
+            ? 'This phone is not registered to your name — ask Kent to reset '
+                'it for your new phone.'
+            : 'Could not reach the server. Try again in a minute.';
         _hoursLoading = false;
       });
     }

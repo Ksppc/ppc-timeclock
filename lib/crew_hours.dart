@@ -64,14 +64,26 @@ class CrewHours {
   /// number just quietly becomes an argument on payday.
   static Future<CrewHours> fetch() async {
     final id = await Identity.effectiveId();
-    final rows = await Supabase.instance.client
-        .rpc('crew_summary', params: {'p_employee_id': id});
+    final token = await Identity.deviceToken();
+
+    final rows = await Supabase.instance.client.rpc(
+      'crew_summary',
+      params: {'p_employee_id': id, 'p_token': token},
+    );
 
     final list = (rows as List?) ?? const [];
     if (list.isEmpty) {
       throw StateError('The server returned no hours record for this phone.');
     }
     final r = list.first as Map<String, dynamic>;
+
+    // First call from this handset: the server just minted a token and will
+    // never send it again. Store it before anything else can throw, or this
+    // phone locks itself out of its own hours until an admin clears the token.
+    final issued = r['issued_token'] as String?;
+    if (issued != null && issued.isNotEmpty) {
+      await Identity.setDeviceToken(issued);
+    }
 
     double num_(dynamic v) => v == null ? 0.0 : (v as num).toDouble();
     DateTime? date_(dynamic v) =>

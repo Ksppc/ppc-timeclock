@@ -39,6 +39,38 @@ class Identity {
     final p = await SharedPreferences.getInstance();
     await p.remove(_idKey);
     await p.remove(_nameKey);
+    await p.remove(_tokenKey);
+  }
+
+  // --- Device token ----------------------------------------------------------
+  //
+  // Proves this handset is the one that belongs to the chosen crew member.
+  //
+  // WHY IT EXISTS
+  // -------------
+  // Every phone runs the same APK with the same public key, and the name picker
+  // hands every phone every crew member's id. So an id proves nothing — it is a
+  // username the whole crew shares a copy of. Reading hours needed something a
+  // phone has and other phones do not.
+  //
+  // The server mints this the first time a phone asks for its hours, and hands
+  // it back exactly once. It is a password for one endpoint, so it lives beside
+  // the employee id and is wiped by clear() along with everything else.
+  //
+  // It guards READING hours and nothing else. It is deliberately not part of
+  // punching: a punch that failed because a token went missing would be a lost
+  // hour of somebody's pay, and no privacy gain is worth that trade.
+  static const _tokenKey = 'device_token';
+
+  static Future<String?> deviceToken() async {
+    final p = await SharedPreferences.getInstance();
+    await p.reload();
+    return p.getString(_tokenKey);
+  }
+
+  static Future<void> setDeviceToken(String token) async {
+    final p = await SharedPreferences.getInstance();
+    await p.setString(_tokenKey, token);
   }
 
   /// Active crew (id + full_name only) from the read-only roster view.
