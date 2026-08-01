@@ -366,6 +366,23 @@ jobs:
       - name: Generate the launcher icon (black PPC shield)
         run: dart run flutter_launcher_icons
 
+      # The clock-in / clock-out sound.
+      #
+      # Android notification sounds are ANDROID RESOURCES, not Flutter assets —
+      # the system plays them from its own process, long after our isolate is
+      # gone, so it cannot reach into the Flutter asset bundle. The file has to
+      # land in res/raw/ and be referenced by bare name, no extension.
+      #
+      # This step exists because `flutter create` regenerates android/ on every
+      # single build. Anything dropped in there by hand disappears. The one
+      # copy of the sound lives in assets/sound/ with the rest of the source,
+      # and is copied into the generated tree here.
+      - name: Install the clock-in sound as an Android resource
+        run: |
+          mkdir -p android/app/src/main/res/raw
+          cp assets/sound/kaching.wav android/app/src/main/res/raw/kaching.wav
+          ls -l android/app/src/main/res/raw/
+
       # Static analysis before we spend ten minutes on a build. Catches the
       # class of error that cost builds #30-32 — a name collision between our
       # classes and a package's exports — in about fifteen seconds.
