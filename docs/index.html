@@ -235,7 +235,7 @@
       <button class="btn primary" id="addCrew">+ Add member</button>
     </div>
     <div style="overflow-x:auto"><table>
-      <thead><tr><th>Name</th><th>Emp #</th><th>Role</th><th>Mobile</th><th>Status</th><th>Employee ID (for the app)</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Emp #</th><th>Role</th><th>Mobile</th><th>Status</th><th>Employee ID (for the app)</th><th>Phone</th><th></th></tr></thead>
       <tbody id="crew"></tbody>
     </table></div>
   </div>
@@ -417,10 +417,13 @@
         <td><span class="chip mchip ${e.is_mobile_crew?'ok':''}" onclick="toggleMobile('${e.id}',${!e.is_mobile_crew})">${e.is_mobile_crew?'✓ mobile':'— set'}</span></td>
         <td>${e.active?'<span class="chip ok">active</span>':'<span class="chip ser">removed</span>'}</td>
         <td><span class="idcell" title="click to copy full ID" onclick="copyId('${e.id}')">${e.id.slice(0,8)}… copy</span></td>
+        <td>${e.device_token
+          ?`<span class="chip ok" title="This person's phone is registered and can see their own hours.">✓ linked</span> <button class="linkbtn" onclick="resetPhone('${e.id}','${(e.full_name||'').replace(/'/g,"\\'")}')">Reset</button>`
+          :`<span class="chip" style="color:var(--ink-2)" title="No phone linked yet. The next phone to open this person's hours claims it.">— open</span>`}</td>
         <td>${e.active
           ?`<button class="linkbtn" onclick="setActive('${e.id}',false)">Remove</button>`
           :`<button class="linkbtn restore" onclick="setActive('${e.id}',true)">Restore</button>`}</td>
-      </tr>`).join('') : '<tr><td colspan="7" class="empty">No crew yet — add your first worker above.</td></tr>';
+      </tr>`).join('') : '<tr><td colspan="8" class="empty">No crew yet — add your first worker above.</td></tr>';
   }
   async function addCrew(){
     const full_name=$('newName').value.trim();
@@ -438,12 +441,45 @@
     try{ await writeRest('PATCH',`employees?id=eq.${id}`,{active}); toast(active?'Restored':'Removed from active crew'); load(); }
     catch(e){ toast('Failed: '+e.message); }
   }
+  // ---- Reset a crew member's phone link -------------------------------------
+  //
+  // WHY THIS BUTTON EXISTS
+  // ----------------------
+  // Reading your own hours requires a device token. The server mints it the
+  // first time a phone asks, and THE PHONE HOLDS THE ONLY COPY — it lives in
+  // the app's local storage and nowhere else.
+  //
+  // So anything that clears app data (a reinstall, "Clear data", a new handset)
+  // leaves the server holding a token the phone can no longer produce. The
+  // person is then locked out of their own hours permanently, and until this
+  // button existed the ONLY way to fix it was somebody writing SQL by hand.
+  //
+  // That is not a system anyone can run. A lockout that needs a developer is a
+  // lockout that stays broken.
+  //
+  // Clearing the token does not touch punches, hours or anything else — it just
+  // reopens the claim so the next phone that asks becomes the linked one.
+  async function resetPhone(id,name){
+    if(!confirm(`Unlink ${name}'s phone?\n\nTheir hours stay exactly as they are. `
+      +`The next phone to open "Show my hours" as ${name} becomes the linked one — `
+      +`so do this when they have a new phone, or after reinstalling the app.`)) return;
+    try{
+      await writeRest('PATCH',`employees?id=eq.${id}`,{device_token:null});
+      toast(`${name}'s phone unlinked — have them tap "Show my hours"`);
+      load();
+    }catch(e){ toast('Reset failed: '+e.message); }
+  }
   async function toggleMobile(id,val){
     try{ await writeRest('PATCH',`employees?id=eq.${id}`,{is_mobile_crew:val}); load(); }
     catch(e){ toast('Failed: '+e.message); }
   }
   function copyId(id){ (navigator.clipboard?.writeText(id)||Promise.reject()).then(()=>toast('Employee ID copied'),()=>toast(id)); }
   window.toggleMobile=toggleMobile; window.setActive=setActive; window.copyId=copyId;
+  // Inline onclick= looks in the GLOBAL scope, and everything in this file is
+  // inside a closure. Forget this line and the button is simply dead — no
+  // error, no toast, nothing. Exactly the silent failure this project exists
+  // to stamp out, one line below where it would happen.
+  window.resetPhone=resetPhone;
 
   // ---- Needs-review resolve ----
   function adminEmail(){
@@ -898,7 +934,7 @@
   async function load(){
     S.start=$('cfgStart').value; S.end=$('cfgEnd').value;
     try{
-      const emps=await rest('employees?select=id,full_name,role,is_mobile_crew,active,employee_number&order=full_name');
+      const emps=await rest('employees?select=id,full_name,role,is_mobile_crew,active,employee_number,device_token&order=full_name');
       const empById={}; emps.forEach(e=>empById[e.id]=e);
       $('kCrew').textContent=emps.filter(e=>e.active).length;
       ALL_EMPS=emps; renderCrew();
