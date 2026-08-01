@@ -7,6 +7,7 @@ import 'package:permission_handler/permission_handler.dart' as ph;
 import 'package:supabase_flutter/supabase_flutter.dart' hide Presence;
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'config.dart';
+import 'crew_hours.dart';
 import 'dispute.dart';
 import 'geofence.dart';
 import 'punch_queue.dart';
@@ -418,6 +419,140 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   // -------------------------------------------------------------------------
+  //  "How many hours have I got?"
+  //
+  //  ON DEMAND ONLY. Nothing here polls, refreshes itself, or runs unless a
+  //  person taps the button. It reads and never writes, and it cannot touch a
+  //  punch or the clocked-in flag. That restraint is the whole design: the two
+  //  worst failures this app has had were both helpful-looking code running on
+  //  its own schedule near the punch path.
+  //
+  //  If every line of this is wrong, the cost is a wrong number on a screen —
+  //  not a wrong number on a paycheque.
+  // -------------------------------------------------------------------------
+  bool _hoursLoading = false;
+  CrewHours? _hours;
+  String? _hoursError;
+
+  Future<void> _loadHours() async {
+    setState(() {
+      _hoursLoading = true;
+      _hoursError = null;
+    });
+    try {
+      final h = await CrewHours.fetch();
+      if (!mounted) return;
+      setState(() {
+        _hours = h;
+        _hoursLoading = false;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        // Show the failure. A zero here would be believed.
+        _hoursError = 'Could not reach the server. Try again in a minute.';
+        _hoursLoading = false;
+      });
+    }
+  }
+
+  Widget _hoursCard() {
+    final h = _hours;
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Text('My hours',
+                    style: TextStyle(fontWeight: FontWeight.w600)),
+                const Spacer(),
+                if (_hoursLoading)
+                  const SizedBox(
+                      height: 15,
+                      width: 15,
+                      child: CircularProgressIndicator(strokeWidth: 2))
+                else
+                  SizedBox(
+                    height: 32,
+                    child: OutlinedButton(
+                      onPressed: _loadHours,
+                      child: Text(h == null ? 'Show my hours' : 'Refresh'),
+                    ),
+                  ),
+              ],
+            ),
+            if (h == null && _hoursError == null && !_hoursLoading) ...[
+              const SizedBox(height: 6),
+              const Text(
+                'Your pay-period total, straight from the office system.',
+                style: TextStyle(fontSize: 12.5, color: Colors.black54),
+              ),
+            ],
+            if (_hoursError != null) ...[
+              const SizedBox(height: 8),
+              Text(_hoursError!,
+                  style: const TextStyle(fontSize: 12.5, color: Colors.red)),
+            ],
+            if (h != null) ...[
+              const SizedBox(height: 10),
+              Text(h.periodLine,
+                  style: const TextStyle(fontSize: 12, color: Colors.black54)),
+              const SizedBox(height: 2),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
+                children: [
+                  Text(h.paidHours.toStringAsFixed(1),
+                      style: const TextStyle(
+                          fontSize: 30, fontWeight: FontWeight.bold)),
+                  const SizedBox(width: 5),
+                  const Text('hrs',
+                      style: TextStyle(fontSize: 13, color: Colors.black54)),
+                  const Spacer(),
+                  Text('${h.daysWorked} day${h.daysWorked == 1 ? '' : 's'}',
+                      style:
+                          const TextStyle(fontSize: 12, color: Colors.black54)),
+                ],
+              ),
+              if (h.otHours > 0)
+                Text(
+                  'Regular ${h.regHours.toStringAsFixed(1)} · '
+                  'Overtime ${h.otHours.toStringAsFixed(1)}',
+                  style: const TextStyle(fontSize: 12, color: Colors.black54),
+                ),
+              const Divider(height: 18),
+              Text('Today: ${h.todayLine}',
+                  style: const TextStyle(fontSize: 12.5)),
+              // The 31 July failure, made visible instead of silent. Punches in
+              // the database that nobody has turned into hours read as 0.0 —
+              // identical to having worked nothing. Never let that pass as an
+              // answer.
+              if (h.looksUncomputed) ...[
+                const SizedBox(height: 8),
+                const Text(
+                  'Your days have not been totalled up yet. This is not zero '
+                  'hours — it means the office system has not run. Tell Kent '
+                  'if it stays like this.',
+                  style: TextStyle(fontSize: 12, color: Color(0xFFB26A00)),
+                ),
+              ],
+              const SizedBox(height: 8),
+              const Text(
+                'Today is not final until the day is closed. If a number looks '
+                'wrong, use "Report a problem" below.',
+                style: TextStyle(fontSize: 11.5, color: Colors.black45),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  // -------------------------------------------------------------------------
   //  "Something's wrong with my hours"
   //
   //  The crew's way of raising a hand. It files a note for the admin and
@@ -816,6 +951,9 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           ),
+
+          const SizedBox(height: 12),
+          _hoursCard(),
 
           const SizedBox(height: 12),
           Card(
