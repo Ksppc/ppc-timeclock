@@ -522,9 +522,52 @@ class ShopFence {
       // Wi-Fi still overrides: being joined to the shop network is its own
       // evidence and does not depend on GPS at all.
       final inside = (usable && metres <= _radiusIn) || wifi == true;
+
       // Outside even if this fix is as wrong as it admits it might be.
+      //
+      // 2 AUGUST — THE ACCURACY CAP USED TO APPLY HERE TOO, AND IT COST A DAY.
+      //
+      // At 13:19 this phone reported 9,397 m from the shop with an accuracy of
+      // 110 m. `usable` was false — 110 is over the 100 m cap — so the reading
+      // was discarded and the away counter stayed at zero. A fix placing
+      // somebody nine kilometres away, with a hundred metres of error, treated
+      // as telling us nothing at all.
+      //
+      // The 13:35 reading only counted because its accuracy landed on exactly
+      // 100. Had it been 105, Kent would have stayed clocked in indefinitely —
+      // not for an afternoon, but until he happened to open the app. Which is
+      // exactly what happened: the shift only ended at 13:41 when he opened it
+      // by hand.
+      //
+      // The cap is right for ARRIVALS. A fix carrying 500 m of error that
+      // happens to compute as 140 m from the shop is not evidence anybody is at
+      // the shop, and it would start a shift on nothing.
+      //
+      // It is wrong for DEPARTURES, because the margin test below already
+      // handles error properly and does it better: subtracting the accuracy
+      // from the distance asks "are they outside the ring even in this fix's
+      // own worst case?". At 9,397 m with 110 m of error the answer is yes by a
+      // factor of eighty-five. Gating that behind a blanket cap threw away the
+      // very evidence the test was built to weigh.
+      //
+      // acc > 0 is still required: a fix that reports no accuracy at all has
+      // nothing to subtract, and would let any reading through.
       final clearlyOutside =
-          usable && wifi != true && (metres - acc) > _radiusOut;
+          acc > 0 && wifi != true && (metres - acc) > _radiusOut;
+
+      // How far beyond the exit ring counts as beyond argument.
+      //
+      // Two agreeing checks is the right caution when somebody is 300 m out and
+      // it could be drift, a reflected signal, or a walk to the far end of the
+      // yard. It is not caution when they are kilometres away — it is just
+      // fifteen more minutes of a shift that has already ended, and it doubles
+      // the number of chances Android has to throttle the check and lose the
+      // departure entirely.
+      //
+      // A kilometre clear of the exit ring is not something GPS error produces.
+      // One such reading ends the shift.
+      final beyondArgument =
+          clearlyOutside && (metres - acc) > (_radiusOut + 1000);
 
       if (inside) {
         away = 0;
@@ -550,15 +593,16 @@ class ShopFence {
             lon: pos.longitude,
             accuracy: pos.accuracy,
             why: '$reason-arrival');
-      } else if (clockedIn && away >= _awayChecksNeeded) {
-        // Two agreeing checks. End the shift, and reset so a later return
-        // starts the count fresh.
+      } else if (clockedIn && (beyondArgument || away >= _awayChecksNeeded)) {
+        // Either one reading that is beyond argument — kilometres clear of the
+        // ring, which GPS error does not manufacture — or two ordinary ones
+        // that agree. Reset the count so a later return starts fresh.
         await prefs.setInt(_awayKey, 0);
         await recordDeparture(
             lat: pos.latitude,
             lon: pos.longitude,
             accuracy: pos.accuracy,
-            why: '$reason-departure');
+            why: beyondArgument ? '$reason-departure-far' : '$reason-departure');
       }
     } catch (_) {
       if (wifi != null) {
