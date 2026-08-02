@@ -1,0 +1,177 @@
+# =============================================================================
+#  Paragon Time Clock — iOS build and TestFlight publish.
+#
+#  WHY CODEMAGIC AND NOT THE GITHUB WORKFLOW THAT BUILDS ANDROID
+#  ------------------------------------------------------------
+#  Nextime is an Expo app and EAS Build handles its Apple signing invisibly.
+#  That pipeline cannot be pointed at this app — EAS only builds Expo projects
+#  and this is Flutter. Codemagic is the equivalent for Flutter: connect the
+#  Apple account once, and certificates and provisioning profiles are fetched
+#  and applied on every build with nothing to maintain.
+#
+#  Android keeps building on GitHub Actions, free and unlimited on a public
+#  repo. Only iOS comes here.
+#
+#  THE SAME TRICK AS THE ANDROID WORKFLOW
+#  --------------------------------------
+#  There is no ios/ folder in this repository, on purpose. `flutter create`
+#  regenerates it on every build and our source is laid over the top, exactly
+#  as build-apk.yml does for android/. One less generated tree to drift out of
+#  date, and no chance of a stale Xcode project quietly overriding a setting we
+#  think we changed.
+#
+#  The cost is that anything Xcode-specific has to be applied by script here,
+#  which is what the patch step below does.
+# =============================================================================
+
+workflows:
+  ios-testflight:
+    name: Paragon Time Clock — iOS → TestFlight
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+
+    environment:
+      flutter: stable
+      # Apple's ITMS-90725: builds must use the iOS 26 SDK or later. Nextime's
+      # first upload was rejected for exactly this. Pinning the image rather
+      # than taking the default means the requirement is visible and versioned
+      # instead of drifting with whatever the runner happens to ship.
+      xcode: latest
+      cocoapods: default
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: ca.paragonprotectivecoatings.timeclock
+      vars:
+        BUNDLE_ID: ca.paragonprotectivecoatings.timeclock
+      groups:
+        - appstore_credentials
+
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: main
+          include: true
+
+    scripts:
+      - name: Stash our source, scaffold iOS, restore over the top
+        script: |
+          set -e
+          mkdir -p /tmp/appsrc
+          cp -r lib pubspec.yaml assets /tmp/appsrc/
+          rm -rf lib pubspec.yaml assets
+          flutter create --platforms=ios \
+            --org ca.paragonprotectivecoatings \
+            --project-name ppc_timeclock .
+          rm -rf lib pubspec.yaml assets
+          cp -r /tmp/appsrc/lib /tmp/appsrc/pubspec.yaml /tmp/appsrc/assets .
+
+      - name: Patch Info.plist — permissions, background modes, sound
+        script: |
+          set -e
+          PLIST=ios/Runner/Info.plist
+          pb() { /usr/libexec/PlistBuddy -c "$1" "$PLIST"; }
+
+          # Location strings. iOS will not even SHOW the permission prompt if
+          # these are absent — the request silently fails and the app looks
+          # broken with nothing in the log to say why.
+          pb "Delete :NSLocationWhenInUseUsageDescription" 2>/dev/null || true
+          pb "Add :NSLocationWhenInUseUsageDescription string 'Paragon Time Clock records when you arrive at and leave the shop, so your hours are logged without you having to remember.'"
+
+          pb "Delete :NSLocationAlwaysAndWhenInUseUsageDescription" 2>/dev/null || true
+          pb "Add :NSLocationAlwaysAndWhenInUseUsageDescription string 'Your hours are recorded automatically when you arrive at or leave the shop. This needs Always so it works with the app closed — which is how it normally runs.'"
+
+          pb "Delete :NSLocationAlwaysUsageDescription" 2>/dev/null || true
+          pb "Add :NSLocationAlwaysUsageDescription string 'Your hours are recorded automatically when you arrive at or leave the shop, with the app closed.'"
+
+          # Background modes. 'location' is what lets iOS relaunch a terminated
+          # app to deliver a region crossing — the whole basis of this design.
+          pb "Delete :UIBackgroundModes" 2>/dev/null || true
+          pb "Add :UIBackgroundModes array"
+          pb "Add :UIBackgroundModes:0 string location"
+          pb "Add :UIBackgroundModes:1 string fetch"
+
+          pb "Print" | head -40
+
+      - name: Register the background isolate in AppDelegate
+        script: |
+          set -e
+          AD=ios/Runner/AppDelegate.swift
+
+          # Without this the OS wakes the app for a region crossing, starts a
+          # fresh isolate, and that isolate has no plugins registered — so the
+          # Dart callback cannot reach Supabase or shared preferences and the
+          # punch is silently lost. Same class of failure as the Android
+          # foreground-service crash: the fence fires correctly and nothing is
+          # written.
+          python3 - "$AD" <<'PY'
+          import sys, re
+          p = sys.argv[1]
+          s = open(p).read()
+          if 'setPluginRegistrantCallback' in s:
+              print('already registered'); raise SystemExit
+          s = s.replace('import Flutter',
+                        'import Flutter\nimport native_geofence', 1)
+          hook = (
+            '    NativeGeofencePlugin.setPluginRegistrantCallback { registry in\n'
+            '      GeneratedPluginRegistrant.register(with: registry)\n'
+            '    }\n'
+          )
+          s = s.replace('    GeneratedPluginRegistrant.register(with: self)\n',
+                        '    GeneratedPluginRegistrant.register(with: self)\n' + hook, 1)
+          open(p,'w').write(s)
+          print('registrant added')
+          PY
+          cat "$AD"
+
+      - name: Minimum iOS version
+        script: |
+          set -e
+          # native_geofence and supabase_flutter both need a modern deployment
+          # target. The Flutter default is older and the pod install fails with
+          # a wall of dependency errors that do not name the real cause.
+          sed -i '' "s/^# platform :ios.*/platform :ios, '14.0'/" ios/Podfile || true
+          grep -q "platform :ios" ios/Podfile || \
+            sed -i '' "1i\\
+          platform :ios, '14.0'
+          " ios/Podfile
+          head -5 ios/Podfile
+
+      - name: Packages
+        script: flutter pub get
+
+      - name: Analyse
+        script: |
+          rm -f analysis_options.yaml
+          rm -rf test
+          flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Build signed IPA
+        script: |
+          flutter build ipa --release \
+            --export-options-plist=/Users/builder/export_options.plist
+
+      - name: Verify the built app actually asks for background location
+        script: |
+          set -e
+          APP=$(find build/ios/iphoneos -maxdepth 1 -name "*.app" | head -1)
+          P="$APP/Info.plist"
+          echo "checking $P"
+          for KEY in NSLocationAlwaysAndWhenInUseUsageDescription UIBackgroundModes; do
+            /usr/libexec/PlistBuddy -c "Print :$KEY" "$P" >/dev/null \
+              || { echo "MISSING $KEY — the patch step did not survive the build"; exit 1; }
+            echo "  ok: $KEY"
+          done
+
+    artifacts:
+      - build/ios/ipa/*.ipa
+      - /tmp/xcodebuild_logs/*.log
+
+    publishing:
+      app_store_connect:
+        auth: integration
+        submit_to_testflight: true
+        # Internal testers only — no Apple review, the build is available in
+        # minutes. External testers need review and that is a different
+        # decision to make later, once it works.
+        submit_to_app_store: false
