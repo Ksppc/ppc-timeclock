@@ -11,6 +11,7 @@ import 'crew_hours.dart';
 import 'dispute.dart';
 import 'geofence.dart';
 import 'punch_queue.dart';
+import 'speak.dart';
 import 'presence.dart';
 import 'identity.dart';
 
@@ -416,6 +417,90 @@ class _HomeScreenState extends State<HomeScreen> {
     await c.fix!();
     await Future.delayed(const Duration(milliseconds: 600));
     await _runChecks();
+  }
+
+  // -------------------------------------------------------------------------
+  //  Hearing the voice without driving anywhere.
+  //
+  //  The greeting depends on the time of day, which makes it almost impossible
+  //  to check by normal use — nobody is going to arrange to clock in at six in
+  //  the morning, half past one and nine at night just to hear all three. So
+  //  every variant gets a button.
+  //
+  //  It calls exactly the same greeting() the real punch uses. A preview that
+  //  went through its own copy of the wording would eventually drift from the
+  //  real thing and be worse than useless.
+  // -------------------------------------------------------------------------
+  Widget _voiceCard() {
+    Widget line(String label, String dir, int hour) => Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Row(
+            children: [
+              SizedBox(
+                width: 96,
+                child: Text(label,
+                    style: const TextStyle(fontSize: 12, color: Colors.black54)),
+              ),
+              Expanded(
+                child: Text('"${Speak.greeting(direction: dir, hour: hour)}"',
+                    style: const TextStyle(
+                        fontSize: 12.5, fontWeight: FontWeight.w600)),
+              ),
+              SizedBox(
+                height: 30,
+                child: OutlinedButton(
+                  style: OutlinedButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 12)),
+                  onPressed: () => Speak.preview(dir, hour),
+                  child: const Icon(Icons.volume_up, size: 16),
+                ),
+              ),
+            ],
+          ),
+        );
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Spoken greeting',
+                style: TextStyle(fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            const Text(
+              'What the phone says when you are punched in or out. It uses your '
+              'phone\'s own voice — the same one Maps uses.',
+              style: TextStyle(fontSize: 12.5, color: Colors.black54),
+            ),
+            const SizedBox(height: 12),
+            const Text('Arriving',
+                style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold,
+                    color: _pblue)),
+            const SizedBox(height: 6),
+            line('before noon', 'in', 7),
+            line('afternoon', 'in', 14),
+            line('evening', 'in', 19),
+            const SizedBox(height: 8),
+            const Text('Leaving',
+                style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold,
+                    color: _pblue)),
+            const SizedBox(height: 6),
+            line('before noon', 'out', 10),
+            line('early afternoon', 'out', 13),
+            line('after 3pm', 'out', 17),
+            line('late night', 'out', 22),
+            const SizedBox(height: 6),
+            const Text(
+              'If you hear nothing, your phone may have no speech engine '
+              'installed, or media volume is down. The punch still records '
+              'either way — the voice can never affect your hours.',
+              style: TextStyle(fontSize: 11.5, color: Colors.black45),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -959,6 +1044,9 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           ),
+
+          const SizedBox(height: 12),
+          _voiceCard(),
 
           const SizedBox(height: 12),
           _hoursCard(),

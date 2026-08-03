@@ -8,6 +8,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:supabase_flutter/supabase_flutter.dart' hide Presence;
 import 'config.dart';
 import 'notify.dart';
+import 'speak.dart';
 import 'punch_queue.dart';
 import 'presence.dart';
 
@@ -367,6 +368,7 @@ class ShopFence {
     await PunchQueue.markPunched('in');
     // AFTER the punch is safely queued, never before.
     await Notify.punch(direction: 'in', at: at, mechanism: why);
+    await Speak.punch(direction: 'in', at: at);
     await Presence.ping(
       insideGeofence: true,
       insideWifi: await Presence.onShopWifi(_wifiSsid),
@@ -421,6 +423,7 @@ class ShopFence {
     await PunchQueue.markPunched('out');
     // AFTER the punch is safely queued, never before.
     await Notify.punch(direction: 'out', at: at, mechanism: why);
+    await Speak.punch(direction: 'out', at: at);
     await Presence.ping(
       insideGeofence: false,
       insideWifi: wifi,
