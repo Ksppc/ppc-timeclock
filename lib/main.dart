@@ -13,6 +13,7 @@ import 'geofence.dart';
 import 'punch_queue.dart';
 import 'presence.dart';
 import 'identity.dart';
+import 'wifi_scanning.dart';
 
 const _pblue = Color(0xFF17457F);
 const _pred = Color(0xFFC8202F);
@@ -71,6 +72,17 @@ class _HomeScreenState extends State<HomeScreen> {
 
   List<_Check> _checks = [];
   bool _checking = false;
+
+  // What Android's Wi-Fi scanning dialog told us, the last time somebody
+  // tapped the button on this screen.
+  //
+  // Held here rather than read fresh every time because the READ side of that
+  // setting was deprecated in API 29 while the FIX side was not — see
+  // wifi_scanning.dart. The dialog's own result is the most trustworthy answer
+  // this app can get, so when we have one, we keep it.
+  //
+  // null = nobody has tapped yet and isScanAlwaysAvailable() had no opinion.
+  bool? _scanningOn;
 
   List<CrewMember> _crew = [];
   bool _loadingCrew = false;
@@ -330,73 +342,107 @@ class _HomeScreenState extends State<HomeScreen> {
       },
     ));
 
-    // 7. WI-FI SWITCHED ON. Not the shop network — the radio itself.
+    // 7. WI-FI SCANNING. The one setting that quietly decides whether the
+    //    shop fence can work at all.
     //
-    //    This row exists because of a line in Google's geofencing
-    //    troubleshooting guide that we had never read:
+    //    THIS ROW REPLACED ONE THAT WAS WRONG. The old row said "leave Wi-Fi
+    //    switched on" and told people the fence relied on it. It does not.
+    //    Android locates the phone by SCANNING — listening for the names of
+    //    nearby access points and matching that pattern against Google's
+    //    database. It never joins them. Wi-Fi can be switched off and the
+    //    fence still works perfectly, PROVIDED scanning is left on.
     //
-    //      "Wi-Fi is turned off on the device. Having Wi-Fi on can
-    //       significantly improve the location accuracy, so if Wi-Fi is turned
-    //       off, your application MIGHT NEVER GET GEOFENCE ALERTS."
+    //    So the old row asked the crew to do a thing that was not the thing,
+    //    and it went amber every afternoon for anyone driving between sites
+    //    with nothing to join. A checklist that cries wolf is one people stop
+    //    reading, and this one was crying about the wrong animal.
     //
-    //    And, from the same page: "On most devices, the geofence service uses
-    //    only network location for geofence triggering." Not GPS — cell towers
-    //    and Wi-Fi scanning. So someone who switches Wi-Fi off to save battery
-    //    can end up with a phone that records nothing, while every other row on
-    //    this screen sits there green. That is the exact silent failure this
-    //    whole project exists to prevent.
+    //    From Google's geofencing troubleshooting guide, which is what makes
+    //    this worth a row at all: "On most devices, the geofence service uses
+    //    only network location for geofence triggering", and with Wi-Fi
+    //    positioning unavailable "your application might never get geofence
+    //    alerts." Accuracy goes from 20-50 m to hundreds of metres or worse —
+    //    against a 150 m ring, that is the difference between working and not.
     //
-    //    We can only detect it one way round: seeing a network name proves the
-    //    radio is on. Not seeing one means either off or simply not connected,
-    //    and we don't guess between those — we just say what would fix it.
-    final nowOn = await Presence.currentSsid();
-    final wifiRadioSeen = nowOn != null;
-    out.add(_Check(
-      'Leave Wi-Fi switched on',
-      wifiRadioSeen
-          ? 'Wi-Fi is on. Good — the shop fence relies on it.'
-          : 'Wi-Fi looks switched off, or is not connected to anything.\n\n'
-              'Android works out the shop boundary using nearby Wi-Fi signals, '
-              'not GPS. With Wi-Fi off your hours may not record at all. Leave '
-              'it on even when you are away from the shop — it does not need to '
-              'be connected to anything, it just needs to be on.',
-      // Amber, never red. We cannot tell "Wi-Fi off" from "Wi-Fi on but not
-      // joined to anything", and a crew member driving between sites has the
-      // second one all day. Flagging that red would put a false alarm on the
-      // screen every afternoon, and a checklist that cries wolf is one people
-      // stop reading — which is how the last Wi-Fi row went wrong.
-      ok: true,
-      warn: !wifiRadioSeen,
-      fixLabel: wifiRadioSeen ? null : 'Open settings',
-      fix: wifiRadioSeen ? null : () async => ph.openAppSettings(),
-    ));
+    //    THE STATUS IS DELIBERATELY ALLOWED TO BE "UNKNOWN".
+    //    Android deprecated isScanAlwaysAvailable() in API 29 but left
+    //    ACTION_REQUEST_SCAN_ALWAYS_AVAILABLE alone. We can fix it reliably;
+    //    we cannot read it reliably. So this never paints red off a value it
+    //    cannot stand behind — it says "not checked" and keeps the fix one tap
+    //    away. An empty result is not evidence. That mistake, in a different
+    //    file, is what produced 33 punches in one day.
+    if (WifiScanning.supported) {
+      // Only ask the OS if the dialog has not already given us a better answer.
+      _scanningOn ??= await WifiScanning.isOn();
+      final scanning = _scanningOn;
 
-    // 8. Shop Wi-Fi network — the backup presence signal. NEVER a blocker.
-    final ssid = ShopFence.wifiSsid;
-    final onWifi = await Presence.onShopWifi(ssid);
-    final youAreOn = nowOn == null
-        ? 'This phone is not on Wi-Fi right now.'
-        : 'This phone is on: $nowOn';
+      out.add(_Check(
+        'Wi-Fi scanning',
+        scanning == true
+            ? 'On. This is what lets your phone notice the shop — it listens '
+                'for nearby Wi-Fi names as landmarks. It never joins them and '
+                'it needs no password.\n\n'
+                'Wi-Fi itself can stay switched off. Only this matters.'
+            : scanning == false
+                ? 'Off. Your phone cannot work out where it is well enough to '
+                    'notice the shop, so your hours may not record at all.\n\n'
+                    'Tap below and say yes to Android\'s question. It takes one '
+                    'tap and does not use battery or data.'
+                : 'Your phone will not tell us whether this is on, which is '
+                    'normal on newer Android and is not a fault.\n\n'
+                    'It is on by default. Tap below to be sure — Android will '
+                    'ask you once and that is the whole job.',
+        // AMBER, NEVER RED — including when the phone says it is off.
+        //
+        // ok:true is what keeps it out of the red band, and that is on purpose:
+        // the read behind it was deprecated in API 29, so a red "your hours
+        // will not record" could be painted off a value Android no longer
+        // promises to keep current. Amber says look at this; red says your pay
+        // is broken. Only one of those is safe to claim from a deprecated call.
+        ok: true,
+        warn: scanning != true,
+        // Different words for different states. "Turn on" is a lie when we do
+        // not know it is off, and a button that misdescribes what it is about
+        // to do is how people learn to ignore buttons.
+        fixLabel: scanning == true
+            ? null
+            : scanning == false
+                ? 'Turn on'
+                : 'Check',
+        fix: scanning == true
+            ? null
+            : () async {
+                final r = await WifiScanning.request();
+                // Only believe a definite answer. Null means the dialog was
+                // not available and we sent them to Location settings instead,
+                // where we have no way to see what they did — so we keep
+                // saying "not checked" rather than inventing a result.
+                if (r != null) _scanningOn = r;
+              },
+      ));
+    }
 
-    out.add(_Check(
-      'Shop Wi-Fi backup',
-      ssid == null || ssid.isEmpty
-          ? '$youAreOn\n\nNo shop network is set yet, so the clock is running '
-              'on GPS alone — which works. To switch the indoor backup on, an '
-              'admin enters the shop network name in the dashboard under '
-              '"Shop zone & rules".'
-          : onWifi == true
-              ? '$youAreOn\n\nThat is the shop network. You stay covered even '
-                  'where GPS cannot reach, like inside the building.'
-              : onWifi == false
-                  ? '$youAreOn\n\nThe shop network is set to "$ssid", so the '
-                      'indoor backup is idle until you join it. Normal when '
-                      'you are away from the shop — nothing to do.'
-                  : '$youAreOn\n\nThis phone will not report its network name, '
-                      'so the clock runs on GPS alone. Nothing to do.',
-      ok: true,
-      warn: onWifi != true,
-    ));
+    // 8. THE "SHOP WI-FI BACKUP" ROW USED TO BE HERE. REMOVED 2 AUGUST 2026.
+    //
+    //    THE SIGNAL STILL RUNS. Only the row is gone. Being joined to the shop
+    //    network is still a presence signal in geofence.dart — it still starts
+    //    a shift when GPS cannot see through the roof, and it still vetoes a
+    //    departure while the phone is sitting on the shop network. Deleting a
+    //    checklist row does not touch any of that, and nobody's hours change
+    //    because of this edit.
+    //
+    //    Why it went: it told the crew nothing they could act on. The row said
+    //    "nothing to do" in almost every state it could be in, and the one
+    //    state that needed doing something about was an admin's job, not
+    //    theirs. Worse, it sat directly beneath a Wi-Fi row and invited exactly
+    //    the wrong conclusion — that joining the shop network helps the fence.
+    //    It does not. The fence positions the phone by SCANNING for nearby
+    //    network names as landmarks and never joins anything. Two Wi-Fi rows
+    //    side by side, one of them irrelevant to the fence, is how that
+    //    misunderstanding got made in the first place.
+    //
+    //    A checklist earns its place by listing things a person can fix. This
+    //    row was inventory.
 
     final pp = await PunchQueue.pendingCount();
     final pg = await Presence.pendingCount();
