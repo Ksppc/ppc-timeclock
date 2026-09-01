@@ -528,6 +528,142 @@ jobs:
                 sys.exit("Gradle 8+ required by native_geofence, found " + m.group(1))
           PY
 
+      # -----------------------------------------------------------------------
+      #  RELEASE SIGNING
+      #
+      #  THE PROBLEM THIS SOLVES
+      #  A debug APK is signed with a keystore the build machine generates for
+      #  itself. Every GitHub run is a fresh machine, so every build has been
+      #  signed with a DIFFERENT throwaway key. Android refuses to update an app
+      #  when the signature changes — that is the "app not updated" message —
+      #  so every new build has meant uninstall, reinstall, and pick your name
+      #  again. Fine for one person testing. Impossible for a crew.
+      #
+      #  Uninstalling also wipes the device token, so the person then gets
+      #  "this phone is not registered" and an admin has to reset it. One
+      #  signing key removes that entire sequence, permanently.
+      #
+      #  IF THE SECRETS ARE NOT SET, THIS STEP DOES NOTHING and the build falls
+      #  back to debug signing exactly as before. That is deliberate: adding
+      #  this must not be able to break a build for somebody who has not set the
+      #  secrets up yet.
+      #
+      #  See SIGNING-KEY-SETUP.md for how to create the key. It is Kent's to
+      #  create and Kent's to paste into GitHub — a signing key is the identity
+      #  of the app and nobody else should ever hold it.
+      # -----------------------------------------------------------------------
+      # NOTE ON WHY THERE IS NO `if:` ON THIS STEP.
+      # The obvious version is `if: secrets.ANDROID_KEYSTORE_BASE64 != ''`.
+      # GitHub does not allow it: the `secrets` context is not among those
+      # available to a step's `if`, so that condition does not do what it
+      # reads like. The check therefore lives inside the script, where the
+      # secret arrives as an ordinary environment variable.
+      - name: Install the release signing key
+        env:
+          KEYSTORE_B64:  ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD:   ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS:      ${{ secrets.ANDROID_KEY_ALIAS }}
+
+        run: |
+          set -e
+          if [ -z "$KEYSTORE_B64" ]; then
+            echo "No signing key configured — building with a throwaway debug key."
+            echo "Crew will have to uninstall before installing this build."
+            echo "See SIGNING-KEY-SETUP.md to fix that permanently."
+            exit 0
+          fi
+          for v in STORE_PASSWORD KEY_PASSWORD KEY_ALIAS; do
+            if [ -z "$(eval echo \$$v)" ]; then
+              echo "ANDROID_KEYSTORE_BASE64 is set but $v is missing."
+              echo "All four secrets are needed. Stopping rather than shipping"
+              echo "an APK signed with the wrong key."
+              exit 1
+            fi
+          done
+          echo "$KEYSTORE_B64" | base64 -d > android/app/ppc-release.jks
+          # Never echo the file or the passwords. Size alone proves it decoded.
+          ls -l android/app/ppc-release.jks
+
+          cat > android/key.properties <<EOF
+          storePassword=$STORE_PASSWORD
+          keyPassword=$KEY_PASSWORD
+          keyAlias=$KEY_ALIAS
+          storeFile=ppc-release.jks
+          EOF
+
+          python3 - <<'PY'
+          import os, re, sys
+
+          # Flutter's scaffold is Kotlin DSL on current versions, Groovy on
+          # older ones. Handle whichever we were given rather than assuming.
+          kts = "android/app/build.gradle.kts"
+          gr  = "android/app/build.gradle"
+          path = kts if os.path.exists(kts) else gr
+          s = open(path, encoding="utf-8").read()
+
+          if "ppcRelease" in s:
+              print("already configured"); sys.exit(0)
+
+          if path.endswith(".kts"):
+              load = (
+                'val ppcProps = java.util.Properties()\n'
+                'val ppcPropsFile = rootProject.file("key.properties")\n'
+                'if (ppcPropsFile.exists()) '
+                'ppcProps.load(java.io.FileInputStream(ppcPropsFile))\n\n'
+              )
+              block = (
+                '\n\nandroid {\n'
+                '    signingConfigs {\n'
+                '        create("ppcRelease") {\n'
+                '            keyAlias = ppcProps.getProperty("keyAlias")\n'
+                '            keyPassword = ppcProps.getProperty("keyPassword")\n'
+                '            storeFile = file(ppcProps.getProperty("storeFile"))\n'
+                '            storePassword = ppcProps.getProperty("storePassword")\n'
+                '        }\n'
+                '    }\n'
+                '    buildTypes {\n'
+                '        getByName("release") {\n'
+                '            signingConfig = signingConfigs.getByName("ppcRelease")\n'
+                '        }\n'
+                '        // The crew install a DEBUG apk (no keystore needed to\n'
+                '        // build one). Signing it with the release key is what\n'
+                '        // makes updates work without switching the whole\n'
+                '        // pipeline to release builds.\n'
+                '        getByName("debug") {\n'
+                '            signingConfig = signingConfigs.getByName("ppcRelease")\n'
+                '        }\n'
+                '    }\n'
+                '}\n'
+              )
+          else:
+              load = (
+                'def ppcProps = new Properties()\n'
+                'def ppcPropsFile = rootProject.file("key.properties")\n'
+                'if (ppcPropsFile.exists()) '
+                'ppcPropsFile.withInputStream { ppcProps.load(it) }\n\n'
+              )
+              block = (
+                '\n\nandroid {\n'
+                '    signingConfigs {\n'
+                '        ppcRelease {\n'
+                '            keyAlias ppcProps["keyAlias"]\n'
+                '            keyPassword ppcProps["keyPassword"]\n'
+                '            storeFile file(ppcProps["storeFile"])\n'
+                '            storePassword ppcProps["storePassword"]\n'
+                '        }\n'
+                '    }\n'
+                '    buildTypes {\n'
+                '        release { signingConfig signingConfigs.ppcRelease }\n'
+                '        debug   { signingConfig signingConfigs.ppcRelease }\n'
+                '    }\n'
+                '}\n'
+              )
+
+          open(path, "w", encoding="utf-8").write(load + s + block)
+          print("release signing wired into", path)
+          PY
+
       - name: Get packages
         run: flutter pub get
 
