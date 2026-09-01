@@ -605,17 +605,30 @@ jobs:
           if "ppcRelease" in s:
               print("already configured"); sys.exit(0)
 
+          # APPEND ONLY. NOTHING GOES ABOVE THE EXISTING SCRIPT.
+          #
+          # The first version of this put the Properties-loading lines at the
+          # TOP of build.gradle.kts. Build #83 died immediately:
+          #
+          #   e: build.gradle.kts:1:21: Unresolved reference 'util'.
+          #   e: build.gradle.kts:3:47: Unresolved reference 'io'.
+          #
+          # In the Gradle Kotlin DSL the `plugins { }` block must come first;
+          # anything before it and the script does not compile, which is why
+          # even `java.util` could not resolve. The properties are therefore
+          # loaded INSIDE the signing config, in an appended block — the same
+          # shape as the desugaring block further up this file, which has been
+          # appending an android { } block successfully for weeks.
           if path.endswith(".kts"):
-              load = (
-                'val ppcProps = java.util.Properties()\n'
-                'val ppcPropsFile = rootProject.file("key.properties")\n'
-                'if (ppcPropsFile.exists()) '
-                'ppcProps.load(java.io.FileInputStream(ppcPropsFile))\n\n'
-              )
               block = (
                 '\n\nandroid {\n'
                 '    signingConfigs {\n'
                 '        create("ppcRelease") {\n'
+                '            val ppcProps = java.util.Properties()\n'
+                '            val ppcFile = rootProject.file("key.properties")\n'
+                '            if (ppcFile.exists()) {\n'
+                '                ppcFile.inputStream().use { ppcProps.load(it) }\n'
+                '            }\n'
                 '            keyAlias = ppcProps.getProperty("keyAlias")\n'
                 '            keyPassword = ppcProps.getProperty("keyPassword")\n'
                 '            storeFile = file(ppcProps.getProperty("storeFile"))\n'
@@ -637,16 +650,14 @@ jobs:
                 '}\n'
               )
           else:
-              load = (
-                'def ppcProps = new Properties()\n'
-                'def ppcPropsFile = rootProject.file("key.properties")\n'
-                'if (ppcPropsFile.exists()) '
-                'ppcPropsFile.withInputStream { ppcProps.load(it) }\n\n'
-              )
               block = (
                 '\n\nandroid {\n'
                 '    signingConfigs {\n'
                 '        ppcRelease {\n'
+                '            def ppcProps = new Properties()\n'
+                '            def ppcFile = rootProject.file("key.properties")\n'
+                '            if (ppcFile.exists()) '
+                'ppcFile.withInputStream { ppcProps.load(it) }\n'
                 '            keyAlias ppcProps["keyAlias"]\n'
                 '            keyPassword ppcProps["keyPassword"]\n'
                 '            storeFile file(ppcProps["storeFile"])\n'
@@ -660,7 +671,7 @@ jobs:
                 '}\n'
               )
 
-          open(path, "w", encoding="utf-8").write(load + s + block)
+          open(path, "a", encoding="utf-8").write(block)
           print("release signing wired into", path)
           PY
 
