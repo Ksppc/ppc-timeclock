@@ -585,13 +585,6 @@ jobs:
           # Never echo the file or the passwords. Size alone proves it decoded.
           ls -l android/app/ppc-release.jks
 
-          cat > android/key.properties <<EOF
-          storePassword=$STORE_PASSWORD
-          keyPassword=$KEY_PASSWORD
-          keyAlias=$KEY_ALIAS
-          storeFile=ppc-release.jks
-          EOF
-
           python3 - <<'PY'
           import os, re, sys
 
@@ -619,20 +612,32 @@ jobs:
           # loaded INSIDE the signing config, in an appended block — the same
           # shape as the desugaring block further up this file, which has been
           # appending an android { } block successfully for weeks.
+          # ENVIRONMENT VARIABLES, NOT A PROPERTIES FILE.
+          #
+          # Two builds were lost trying to read key.properties from the Kotlin
+          # DSL. First at the top of the script (#83 — nothing may precede the
+          # plugins block), then inside the signingConfigs lambda (#84):
+          #
+          #   build.gradle.kts:66:33: Unresolved reference 'util'.
+          #   build.gradle.kts:69:39: Cannot infer type for type parameter 'R'.
+          #
+          # The Kotlin DSL does not resolve java.util there, and .use{} cannot
+          # infer its type. Both are fixable with enough import wrangling, and
+          # none of it is worth it — the values are already secrets in the
+          # environment, so read them from there.
+          #
+          # System.getenv needs no import in any Gradle script, Kotlin or
+          # Groovy. There is no file to parse, nothing to leave lying on disk,
+          # and the same four lines work in both dialects.
           if path.endswith(".kts"):
               block = (
                 '\n\nandroid {\n'
                 '    signingConfigs {\n'
                 '        create("ppcRelease") {\n'
-                '            val ppcProps = java.util.Properties()\n'
-                '            val ppcFile = rootProject.file("key.properties")\n'
-                '            if (ppcFile.exists()) {\n'
-                '                ppcFile.inputStream().use { ppcProps.load(it) }\n'
-                '            }\n'
-                '            keyAlias = ppcProps.getProperty("keyAlias")\n'
-                '            keyPassword = ppcProps.getProperty("keyPassword")\n'
-                '            storeFile = file(ppcProps.getProperty("storeFile"))\n'
-                '            storePassword = ppcProps.getProperty("storePassword")\n'
+                '            storeFile = file(System.getenv("PPC_STORE_FILE") ?: "ppc-release.jks")\n'
+                '            storePassword = System.getenv("PPC_STORE_PASSWORD")\n'
+                '            keyAlias = System.getenv("PPC_KEY_ALIAS")\n'
+                '            keyPassword = System.getenv("PPC_KEY_PASSWORD")\n'
                 '        }\n'
                 '    }\n'
                 '    buildTypes {\n'
@@ -654,14 +659,10 @@ jobs:
                 '\n\nandroid {\n'
                 '    signingConfigs {\n'
                 '        ppcRelease {\n'
-                '            def ppcProps = new Properties()\n'
-                '            def ppcFile = rootProject.file("key.properties")\n'
-                '            if (ppcFile.exists()) '
-                'ppcFile.withInputStream { ppcProps.load(it) }\n'
-                '            keyAlias ppcProps["keyAlias"]\n'
-                '            keyPassword ppcProps["keyPassword"]\n'
-                '            storeFile file(ppcProps["storeFile"])\n'
-                '            storePassword ppcProps["storePassword"]\n'
+                '            storeFile file(System.getenv("PPC_STORE_FILE") ?: "ppc-release.jks")\n'
+                '            storePassword System.getenv("PPC_STORE_PASSWORD")\n'
+                '            keyAlias System.getenv("PPC_KEY_ALIAS")\n'
+                '            keyPassword System.getenv("PPC_KEY_PASSWORD")\n'
                 '        }\n'
                 '    }\n'
                 '    buildTypes {\n'
@@ -724,7 +725,16 @@ jobs:
       # --split-per-abi builds one APK per CPU architecture instead of a single
       # fat one carrying all of them. The old combined debug APK was 161 MB,
       # most of which was machine code for chips the phone does not have.
+      # The signing values are read by build.gradle with System.getenv, so they
+      # have to be present HERE, on the step that actually runs Gradle. If the
+      # secrets are unset these are empty, the signing config gets nulls, and
+      # Gradle falls back to the debug key exactly as it always did.
       - name: Build APK (debug — installable, no keystore needed)
+        env:
+          PPC_STORE_FILE:     ppc-release.jks
+          PPC_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          PPC_KEY_PASSWORD:   ${{ secrets.ANDROID_KEY_PASSWORD }}
+          PPC_KEY_ALIAS:      ${{ secrets.ANDROID_KEY_ALIAS }}
         run: flutter build apk --debug --split-per-abi
 
       # Prove the geofence machinery actually made it into the shipped binary.
