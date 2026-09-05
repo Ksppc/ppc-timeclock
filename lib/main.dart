@@ -126,10 +126,77 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  /// Tapping a name PROPOSES it. The PIN claims it.
+  ///
+  /// Loops rather than failing shut: a mistyped digit should cost one more go,
+  /// not send somebody back to the list to find their name again. Cancelling
+  /// is always available and binds nothing.
   Future<void> _pick(CrewMember m) async {
+    String? problem;
+    while (true) {
+      final pin = await _askPin(m, problem);
+      if (pin == null) return; // cancelled — nothing stored, nothing claimed
+      problem = await Identity.claim(m.id, pin);
+      if (problem == null) break; // claimed
+    }
     await Identity.choose(m.id, m.name);
     _who = m.name;
     await _startTracking();
+  }
+
+  /// The PIN box. Returns the digits, or null if they backed out.
+  Future<String?> _askPin(CrewMember m, String? problem) async {
+    final ctl = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        title: Text(m.name),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Enter your 5-digit PIN to set this phone up.'),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctl,
+              autofocus: true,
+              obscureText: true,
+              keyboardType: TextInputType.number,
+              maxLength: 5,
+              textAlign: TextAlign.center,
+              style: const TextStyle(fontSize: 28, letterSpacing: 10),
+              decoration: const InputDecoration(
+                counterText: '',
+                border: OutlineInputBorder(),
+                hintText: '•••••',
+              ),
+              onSubmitted: (v) => Navigator.pop(ctx, v.trim()),
+            ),
+            if (problem != null) ...[
+              const SizedBox(height: 10),
+              Text(problem, style: const TextStyle(color: _pred, fontSize: 12.5)),
+            ],
+            const SizedBox(height: 10),
+            const Text(
+              'Kent sets your PIN. You only need it this once — after today '
+              'the phone remembers you and never asks again.',
+              style: TextStyle(fontSize: 12, color: Colors.black54),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, null),
+            child: const Text('Not me'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctl.text.trim()),
+            child: const Text('Set up this phone'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _startTracking() async {

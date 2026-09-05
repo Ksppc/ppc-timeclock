@@ -35,6 +35,46 @@ class Identity {
     await p.setString(_nameKey, name);
   }
 
+  /// Claim a name with that person's PIN.
+  ///
+  /// Returns NULL on success, or a sentence to show the person.
+  ///
+  /// WHY A PIN GUARDS THIS
+  /// ---------------------
+  /// Tapping a name used to be the whole identity check — there wasn't one.
+  /// Every phone runs the same APK with the same public key and the picker
+  /// hands every phone every crew member's name, so the tap proved nothing.
+  /// On 3 September an App Reviewer in Cupertino tapped "Randy Restoule" to
+  /// get past that screen and filed fifty position reports under his name from
+  /// 1,900 km away. Nothing was lost, but it was a live demonstration.
+  ///
+  /// THE CHECK IS NOT HERE. The PIN goes to the database, which holds a bcrypt
+  /// hash and does the comparison itself. This app never sees the PIN and
+  /// cannot be talked out of verifying it, because it is not the thing
+  /// verifying it. A wrong PIN comes back as an ordinary result rather than an
+  /// error — five of them and the server locks the name for fifteen minutes.
+  static Future<String?> claim(String id, String pin) async {
+    try {
+      final res = await Supabase.instance.client.rpc(
+        'claim_identity',
+        params: {'p_employee_id': id, 'p_pin': pin},
+      );
+      final map = (res is Map) ? res : null;
+      if (map == null || map['ok'] != true || map['token'] is! String) {
+        // The server explains itself — wrong PIN, no PIN set, locked out — and
+        // its wording is better than anything guessable from here.
+        final m = map?['message'];
+        return (m is String && m.isNotEmpty) ? m : 'That did not work. Try again.';
+      }
+      // Token first. A phone that knows its name but has no token is
+      // recoverable; the reverse is not.
+      await setDeviceToken(map['token'] as String);
+      return null;
+    } catch (_) {
+      return 'Could not reach the server. Check your signal and try again.';
+    }
+  }
+
   static Future<void> clear() async {
     final p = await SharedPreferences.getInstance();
     await p.remove(_idKey);

@@ -235,7 +235,7 @@
       <button class="btn primary" id="addCrew">+ Add member</button>
     </div>
     <div style="overflow-x:auto"><table>
-      <thead><tr><th>Name</th><th>Emp #</th><th>Role</th><th>Mobile</th><th>Status</th><th>Employee ID (for the app)</th><th>Phone</th><th></th></tr></thead>
+      <thead><tr><th>Name</th><th>Emp #</th><th>Role</th><th>Mobile</th><th>Status</th><th>Employee ID (for the app)</th><th>PIN</th><th>Phone</th><th></th></tr></thead>
       <tbody id="crew"></tbody>
     </table></div>
   </div>
@@ -417,13 +417,14 @@
         <td><span class="chip mchip ${e.is_mobile_crew?'ok':''}" onclick="toggleMobile('${e.id}',${!e.is_mobile_crew})">${e.is_mobile_crew?'✓ mobile':'— set'}</span></td>
         <td>${e.active?'<span class="chip ok">active</span>':'<span class="chip ser">removed</span>'}</td>
         <td><span class="idcell" title="click to copy full ID" onclick="copyId('${e.id}')">${e.id.slice(0,8)}… copy</span></td>
+        <td>${pinCell(e)}</td>
         <td>${e.device_token
           ?`<span class="chip ok" title="This person's phone is registered and can see their own hours.">✓ linked</span> <button class="linkbtn" onclick="resetPhone('${e.id}','${(e.full_name||'').replace(/'/g,"\\'")}')">Reset</button>`
-          :`<span class="chip" style="color:var(--ink-2)" title="No phone linked yet. The next phone to open this person's hours claims it.">— open</span>`}</td>
+          :`<span class="chip" style="color:var(--ink-2)" title="No phone linked yet. They claim it by entering their PIN in the app.">— open</span>`}</td>
         <td>${e.active
           ?`<button class="linkbtn" onclick="setActive('${e.id}',false)">Remove</button>`
           :`<button class="linkbtn restore" onclick="setActive('${e.id}',true)">Restore</button>`}</td>
-      </tr>`).join('') : '<tr><td colspan="8" class="empty">No crew yet — add your first worker above.</td></tr>';
+      </tr>`).join('') : '<tr><td colspan="9" class="empty">No crew yet — add your first worker above.</td></tr>';
   }
   async function addCrew(){
     const full_name=$('newName').value.trim();
@@ -445,9 +446,8 @@
   //
   // WHY THIS BUTTON EXISTS
   // ----------------------
-  // Reading your own hours requires a device token. The server mints it the
-  // first time a phone asks, and THE PHONE HOLDS THE ONLY COPY — it lives in
-  // the app's local storage and nowhere else.
+  // Reading your own hours requires a device token, and THE PHONE HOLDS THE
+  // ONLY COPY — it lives in the app's local storage and nowhere else.
   //
   // So anything that clears app data (a reinstall, "Clear data", a new handset)
   // leaves the server holding a token the phone can no longer produce. The
@@ -457,18 +457,77 @@
   // That is not a system anyone can run. A lockout that needs a developer is a
   // lockout that stays broken.
   //
-  // Clearing the token does not touch punches, hours or anything else — it just
-  // reopens the claim so the next phone that asks becomes the linked one.
+  // WHAT CHANGED 31 AUGUST. The token used to be minted for the first phone
+  // that asked, which meant this button reopened a free-for-all. It now takes
+  // the person's PIN to claim a name, so unlinking reopens the claim TO THEM
+  // rather than to whoever gets there first.
+  //
+  // Clearing the token still does not touch punches, hours or anything else.
   async function resetPhone(id,name){
     if(!confirm(`Unlink ${name}'s phone?\n\nTheir hours stay exactly as they are. `
-      +`The next phone to open "Show my hours" as ${name} becomes the linked one — `
-      +`so do this when they have a new phone, or after reinstalling the app.`)) return;
+      +`They re-claim their name on the new phone by entering their PIN — `
+      +`so do this when they have a new handset, or after reinstalling the app.`)) return;
     try{
       await writeRest('PATCH',`employees?id=eq.${id}`,{device_token:null});
-      toast(`${name}'s phone unlinked — have them tap "Show my hours"`);
+      toast(`${name}'s phone unlinked — they re-enter their PIN in the app`);
       load();
     }catch(e){ toast('Reset failed: '+e.message); }
   }
+  // ---- PINs --------------------------------------------------------------
+  //
+  // WHY A PIN EXISTS AT ALL
+  // The name picker used to ask nothing. Whoever held the app tapped a name and
+  // became that person. On 3 September an App Reviewer in Cupertino installed
+  // the build, tapped "Randy Restoule" to get past the first screen, and filed
+  // fifty position reports under his name from 1,900 km away. Nothing was lost —
+  // he was nowhere near the fence — but it was a live demonstration.
+  //
+  // The PIN is asked ONCE, when a phone claims a name. After that the phone
+  // holds a token and is never asked again; this app is meant to stay closed.
+  //
+  // WHAT IS STORED
+  // Not the PIN. The database keeps a bcrypt hash and does the comparison
+  // itself, so the app never sees it and cannot be talked out of checking. This
+  // page cannot read it back either — only whether one is set.
+  const PIN_STATUS={};
+  function pinCell(e){
+    const st=PIN_STATUS[e.id]||{};
+    const nm=(e.full_name||'').replace(/'/g,"\\'");
+    if(st.pin_locked_until && new Date(st.pin_locked_until)>new Date()){
+      const mins=Math.max(1,Math.ceil((new Date(st.pin_locked_until)-new Date())/60000));
+      return `<span class="chip ser" title="Five wrong PINs. Locked so nobody can simply guess their way in.">locked ${mins}m</span> `
+        +`<button class="linkbtn" onclick="clearPinLock('${e.id}','${nm}')">Unlock</button>`;
+    }
+    if(st.has_pin){
+      return `<span class="chip ok" title="A PIN is set. They need it once, to claim their name on a phone.">✓ set</span> `
+        +`<button class="linkbtn" onclick="setPin('${e.id}','${nm}')">Change</button>`;
+    }
+    return `<span class="chip ser" title="No PIN. Until one is set, this person CANNOT set up the app on a phone.">— none</span> `
+      +`<button class="linkbtn" onclick="setPin('${e.id}','${nm}')">Set</button>`;
+  }
+  async function setPin(id,name){
+    const pin=prompt(`Set a 5-digit PIN for ${name}.\n\n`
+      +`They type it once, in the app, the first time they pick their name.\n`
+      +`Write it down — this page can never show it to you again.`);
+    if(pin===null) return;
+    if(!/^[0-9]{5}$/.test(pin.trim())){ toast('That must be exactly 5 digits — nothing was changed'); return; }
+    try{
+      await rpc('set_crew_pin',{p_employee_id:id,p_pin:pin.trim()});
+      toast(`PIN set for ${name} — tell them what it is`);
+      load();
+    }catch(e){ toast('Could not set the PIN: '+e.message); }
+  }
+  async function clearPinLock(id,name){
+    if(!confirm(`Unlock ${name}?\n\nThe name locked itself after five wrong PINs. `
+      +`Unlocking lets them try again straight away. Their PIN is unchanged.`)) return;
+    try{
+      await rpc('clear_pin_lock',{p_employee_id:id});
+      toast(`${name} unlocked`);
+      load();
+    }catch(e){ toast('Could not unlock: '+e.message); }
+  }
+  window.setPin=setPin; window.clearPinLock=clearPinLock;
+
   async function toggleMobile(id,val){
     try{ await writeRest('PATCH',`employees?id=eq.${id}`,{is_mobile_crew:val}); load(); }
     catch(e){ toast('Failed: '+e.message); }
@@ -935,6 +994,14 @@
     S.start=$('cfgStart').value; S.end=$('cfgEnd').value;
     try{
       const emps=await rest('employees?select=id,full_name,role,is_mobile_crew,active,employee_number,device_token&order=full_name');
+      // Whether a PIN exists, never the PIN or its hash — see pinCell above.
+      // Wrapped because a missing view must not take the whole page down; the
+      // PIN column simply shows "none" and everything else still works.
+      try{
+        const ps=await rest('crew_pin_status?select=id,has_pin,pin_locked_until,pin_attempts');
+        Object.keys(PIN_STATUS).forEach(k=>delete PIN_STATUS[k]);
+        ps.forEach(p=>{PIN_STATUS[p.id]=p;});
+      }catch(err){ console.warn('PIN status unavailable:',err.message); }
       const empById={}; emps.forEach(e=>empById[e.id]=e);
       $('kCrew').textContent=emps.filter(e=>e.active).length;
       ALL_EMPS=emps; renderCrew();
